@@ -2,7 +2,7 @@ import sys
 import os
 import glob
 import shutil
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, regexp_replace
 from spark_utils import get_spark_session 
 
 if len(sys.argv) < 3:
@@ -34,14 +34,14 @@ try:
     df_final = df.select(
         col("_c0").alias("cnpj_basico"),
         col("_c1").alias("identificador_socio"),
-        col("_c2").alias("nome_socio_razao_social"),
+        regexp_replace(col("_c2"), "\"", "").alias("nome_socio_razao_social"),
         col("_c3").alias("cpf_cnpj_socio"),
-        col("_c4").alias("qualificacao_socio"),
+        regexp_replace(col("_c4"), "\"", "").alias("qualificacao_socio"),
         col("_c5").alias("data_entrada_sociedade"),
-        col("_c6").alias("pais"),
+        regexp_replace(col("_c6"), "\"", "").alias("pais"),
         col("_c7").alias("representante_legal"),
-        col("_c8").alias("nome_representante"),
-        col("_c9").alias("qualificacao_representante_legal"),
+        regexp_replace(col("_c8"), "\"", "").alias("nome_representante"),
+        regexp_replace(col("_c9"), "\"", "").alias("qualificacao_representante_legal"),
         col("_c10").alias("faixa_etaria")
     )
 

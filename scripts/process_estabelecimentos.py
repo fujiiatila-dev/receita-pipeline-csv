@@ -3,7 +3,7 @@ import sys
 import os
 import glob
 import shutil
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, regexp_replace
 from spark_utils import get_spark_session 
 
 if len(sys.argv) < 3:
@@ -37,31 +37,31 @@ try:
         col("_c1").alias("cnpj_ordem"),
         col("_c2").alias("cnpj_dv"),
         col("_c3").alias("identificador_matriz_filial"),
-        col("_c4").alias("nome_fantasia"),
-        col("_c5").alias("situacao_cadastral"),
+        regexp_replace(col("_c4"), "\"", "").alias("nome_fantasia"),
+        regexp_replace(col("_c5"), "\"", "").alias("situacao_cadastral"),
         col("_c6").alias("data_situacao_cadastral"),
-        col("_c7").alias("motivo_situacao_cadastral"),
-        col("_c8").alias("nome_cidade_exterior"),
-        col("_c9").alias("pais"),
+        regexp_replace(col("_c7"), "\"", "").alias("motivo_situacao_cadastral"),
+        regexp_replace(col("_c8"), "\"", "").alias("nome_cidade_exterior"),
+        regexp_replace(col("_c9"), "\"", "").alias("pais"),
         col("_c10").alias("data_inicio_atividade"),
         col("_c11").alias("cnae_fiscal_principal"),
         col("_c12").alias("cnae_fiscal_secundaria"),
-        col("_c13").alias("tipo_logradouro"),
-        col("_c14").alias("logradouro"),
-        col("_c15").alias("numero"),
-        col("_c16").alias("complemento"),
-        col("_c17").alias("bairro"),
+        regexp_replace(col("_c13"), "\"", "").alias("tipo_logradouro"),
+        regexp_replace(col("_c14"), "\"", "").alias("logradouro"),
+        regexp_replace(col("_c15"), "\"", "").alias("numero"),
+        regexp_replace(col("_c16"), "\"", "").alias("complemento"),
+        regexp_replace(col("_c17"), "\"", "").alias("bairro"),
         col("_c18").alias("cep"),
-        col("_c19").alias("uf"),
-        col("_c20").alias("municipio"),
+        regexp_replace(col("_c19"), "\"", "").alias("uf"),
+        regexp_replace(col("_c20"), "\"", "").alias("municipio"),
         col("_c21").alias("ddd_1"),
         col("_c22").alias("telefone_1"),
         col("_c23").alias("ddd_2"),
         col("_c24").alias("telefone_2"),
         col("_c25").alias("ddd_fax"),
         col("_c26").alias("fax"),
-        col("_c27").alias("correio_eletronico"),
-        col("_c28").alias("situacao_especial"),
+        regexp_replace(col("_c27"), "\"", "").alias("correio_eletronico"),
+        regexp_replace(col("_c28"), "\"", "").alias("situacao_especial"),
         col("_c29").alias("data_situacao_especial")
     )
 

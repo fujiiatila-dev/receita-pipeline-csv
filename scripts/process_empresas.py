@@ -34,12 +34,12 @@ try:
 
     df_final = df.select(
         col("_c0").alias("cnpj_basico"),
-        col("_c1").alias("razao_social"),
-        col("_c2").alias("natureza_juridica"),
-        col("_c3").alias("qualificacao_responsavel"),
+        regexp_replace(col("_c1"), "\"", "").alias("razao_social"),
+        regexp_replace(col("_c2"), "\"", "").alias("natureza_juridica"),
+        regexp_replace(col("_c3"), "\"", "").alias("qualificacao_responsavel"),
         regexp_replace(col("_c4"), ",", ".").alias("capital_social"), 
-        col("_c5").alias("porte_empresa"),
-        col("_c6").alias("ente_federativo_responsavel")
+        regexp_replace(col("_c5"), "\"", "").alias("porte_empresa"),
+        regexp_replace(col("_c6"), "\"", "").alias("ente_federativo_responsavel")
     )
 
     print(f"Gerando CSV único em: {TEMP_OUTPUT_DIR}")
