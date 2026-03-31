@@ -53,31 +53,110 @@ Este projeto implementa um pipeline completo de dados que:
 
 ## Arquitetura
 
-```
-                        Receita Federal
-          https://arquivos.receitafederal.gov.br
-                            |
-                            | Download ZIP (31 arquivos)
-                            v
-+-----------------------------------------------------------+
-|                    Apache Airflow 3.1.8                    |
-|  +-----------------------------------------------------+  |
-|  | DAG: receita_federal_csv_generator (TaskFlow API)    |  |
-|  |  1. get_latest_date        (@task)                   |  |
-|  |  2. download_and_extract   (@task, paralelo)         |  |
-|  |  3. process_*              (Spark jobs)              |  |
-|  |  4. load_*                 (ClickHouse, opcional)    |  |
-|  +-----------------------------------------------------+  |
-+-----------------------------------------------------------+
-              |                |               |
-    +---------+------+  +-----+------+  +-----+--------+
-    |    MinIO       |  | PostgreSQL |  |  ClickHouse  |
-    |   Data Lake    |  |     DW     |  |  Analitico   |
-    |   (S3 API)     |  |            |  |  (opcional)  |
-    +----------------+  +------------+  +--------------+
+### Visao Geral do Pipeline
+
+```mermaid
+graph TB
+    subgraph Fonte["Fonte de Dados"]
+        RF["Receita Federal<br/>arquivos.receitafederal.gov.br"]
+    end
+
+    subgraph Airflow["Apache Airflow 3.1.8"]
+        direction TB
+        T1["@task<br/>get_latest_date"]
+        
+        subgraph Downloads["Downloads Paralelos (31 tasks)"]
+            D1["download_Empresas0..9"]
+            D2["download_Estabelecimentos0..9"]
+            D3["download_Socios0..9"]
+            D4["download_Simples"]
+        end
+
+        subgraph Spark["Processamento Spark"]
+            S1["process_Empresas"]
+            S2["process_Estabelecimentos"]
+            S3["process_Socios"]
+            S4["process_Simples"]
+        end
+
+        subgraph Load["Ingestao ClickHouse (opcional)"]
+            L1["load_Empresas"]
+            L2["load_Estabelecimentos"]
+            L3["load_Socios"]
+            L4["load_Simples"]
+        end
+
+        T1 --> Downloads
+        D1 --> S1
+        D2 --> S2
+        D3 --> S3
+        D4 --> S4
+        S1 --> L1
+        S2 --> L2
+        S3 --> L3
+        S4 --> L4
+    end
+
+    RF -->|"ZIP files"| Downloads
+
+    subgraph Storage["Armazenamento"]
+        MINIO[("MinIO<br/>Data Lake<br/>S3 API")]
+        PG[("PostgreSQL 16<br/>Data Warehouse")]
+        CH[("ClickHouse<br/>Analitico<br/>(opcional)")]
+    end
+
+    Spark -->|"Delta Lake"| MINIO
+    Spark -->|"CSV output"| PG
+    Load -->|"Staging tables"| CH
+
+    style Fonte fill:#e8f5e9,stroke:#2e7d32
+    style Airflow fill:#e3f2fd,stroke:#1565c0
+    style Downloads fill:#fff3e0,stroke:#e65100
+    style Spark fill:#fce4ec,stroke:#c62828
+    style Load fill:#f3e5f5,stroke:#6a1b9a
+    style Storage fill:#f5f5f5,stroke:#616161
+    style RF fill:#e8f5e9,stroke:#2e7d32
+    style MINIO fill:#fff9c4,stroke:#f57f17
+    style PG fill:#bbdefb,stroke:#1565c0
+    style CH fill:#e1bee7,stroke:#6a1b9a
 ```
 
 ### Servicos Docker (Airflow 3.x)
+
+```mermaid
+graph LR
+    subgraph Docker["Docker Compose"]
+        direction TB
+        INIT["airflow-init<br/><i>db migrate + create user</i>"]
+        API["airflow-api-server<br/><i>UI React + FastAPI</i><br/>:8080"]
+        SCH["airflow-scheduler<br/><i>Agendamento + execucao</i>"]
+        DAG["airflow-dag-processor<br/><i>Parsing de DAGs</i><br/>(novo no 3.x)"]
+        PG[("PostgreSQL 16<br/>Metadata + DW<br/>:5432")]
+        MN[("MinIO<br/>Data Lake<br/>:9000 / :9010")]
+
+        INIT --> API
+        INIT --> SCH
+        INIT --> DAG
+        PG --- API
+        PG --- SCH
+        PG --- DAG
+        MN --- SCH
+    end
+
+    USER["Usuario"] -->|"http://localhost:8080"| API
+    USER -->|"http://localhost:9010"| MN
+
+    style Docker fill:#e3f2fd,stroke:#1565c0
+    style INIT fill:#c8e6c9,stroke:#2e7d32
+    style API fill:#bbdefb,stroke:#1565c0
+    style SCH fill:#bbdefb,stroke:#1565c0
+    style DAG fill:#fff3e0,stroke:#e65100
+    style PG fill:#e1bee7,stroke:#6a1b9a
+    style MN fill:#fff9c4,stroke:#f57f17
+    style USER fill:#f5f5f5,stroke:#616161
+```
+
+### Servicos Docker
 
 | Servico | Descricao |
 |---|---|
