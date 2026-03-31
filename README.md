@@ -1,91 +1,106 @@
-# 🏭 Receita Federal Data Pipeline
+# Receita Federal Data Pipeline
 
-Pipeline de dados automatizado para download, processamento e análise de dados abertos da Receita Federal (CNPJ), utilizando Apache Airflow, Apache Spark, MinIO e PostgreSQL.
+Pipeline de dados automatizado para download, processamento e analise de dados abertos da Receita Federal (CNPJ), utilizando Apache Airflow, Apache Spark, MinIO, PostgreSQL e ClickHouse.
 
-## 📋 Índice
+## Indice
 
-- [Visão Geral](#visão-geral)
+- [Visao Geral](#visao-geral)
 - [Tecnologias](#tecnologias)
 - [Arquitetura](#arquitetura)
-- [Pré-requisitos](#pré-requisitos)
-- [Instalação](#instalação)
+- [Pre-requisitos](#pre-requisitos)
+- [Instalacao](#instalacao)
 - [Uso](#uso)
 - [Estrutura do Projeto](#estrutura-do-projeto)
 - [Funcionalidades](#funcionalidades)
-- [Configuração](#configuração)
+- [Configuracao](#configuracao)
+- [Migracao Airflow 3.x](#migracao-airflow-3x)
 
-## 🎯 Visão Geral
+## Visao Geral
 
 Este projeto implementa um pipeline completo de dados que:
 
-1. **Detecta** automaticamente a versão mais recente dos dados abertos da Receita Federal
-2. **Baixa** arquivos ZIP de empresas, estabelecimentos, sócios e simples
+1. **Detecta** automaticamente a versao mais recente dos dados abertos da Receita Federal
+2. **Baixa** arquivos ZIP de empresas, estabelecimentos, socios e simples (31 downloads em paralelo)
 3. **Extrai** e organiza os arquivos CSV
-4. **Processa** os dados utilizando Apache Spark
-5. **Armazena** no MinIO (Data Lake S3-compatible) e PostgreSQL (Data Warehouse)
+4. **Processa** os dados utilizando Apache Spark (limpeza, schema, merge)
+5. **Ingere** no ClickHouse para consultas analiticas (opcional - graceful degradation)
+6. **Armazena** no MinIO (Data Lake S3-compatible) e PostgreSQL (Data Warehouse)
 
-## 🛠️ Tecnologias
+## Tecnologias
 
-| Tecnologia | Versão | Finalidade |
-|-----------|---------|-----------|
-| **Apache Airflow** | 2.9.0 | Orquestração de workflows |
-| **Apache Spark** | 3.5.0 | Processamento distribuído de dados |
+| Tecnologia | Versao | Finalidade |
+|---|---|---|
+| **Apache Airflow** | 3.1.8 | Orquestracao de workflows |
+| **Apache Spark** | 3.5.0 | Processamento distribuido de dados |
+| **Delta Lake** | 3.0.0 | Formato de tabela transacional |
 | **MinIO** | Latest | Data Lake (Storage S3) |
-| **PostgreSQL** | 13 | Data Warehouse e Airflow Metadata |
-| **Docker** | - | Containerização |
-| **Python** | 3.x | Scripts de processamento |
+| **PostgreSQL** | 16 | Data Warehouse e Airflow Metadata |
+| **ClickHouse** | Cloud/Self-hosted | Banco analitico (opcional) |
+| **Docker** | Compose v2.14+ | Containerizacao |
+| **Python** | 3.12+ | Scripts de processamento |
+| **Java** | OpenJDK 17 | Runtime Spark |
 
-### Bibliotecas Python Principais
+### Bibliotecas Python
 
-- `pyspark==3.5.0` - Processamento distribuído
+- `pyspark==3.5.0` - Processamento distribuido
 - `delta-spark==3.0.0` - Formato Delta Lake
-- `pandas` - Manipulação de dados
+- `pandas` - Manipulacao de dados
 - `requests` - Download de arquivos
 - `minio` - Cliente MinIO
-- `dbt-core` e `dbt-postgres` - Transformação de dados
+- `clickhouse-connect` - Integracao com ClickHouse
+- `dbt-core` e `dbt-postgres` - Transformacao de dados
+- `apache-airflow-providers-standard` - Operators padrao Airflow 3.x
 
-## 🏗️ Arquitetura
+## Arquitetura
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Receita Federal                         │
-│         https://arquivos.receitafederal.gov.br              │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         │ Download ZIP
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   Apache Airflow                            │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │ DAG: receita_federal_csv_generator                   │   │
-│  │  1. get_latest_date                                  │   │
-│  │  2. download_* (parallel)                            │   │
-│  │  3. process_* (Spark jobs)                           │   │
-│  └──────────────────────────────────────────────────────┘   │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-            ┌────────────┴────────────┐
-            ▼                         ▼
-    ┌──────────────┐          ┌──────────────┐
-    │    MinIO     │          │  PostgreSQL  │
-    │  Data Lake   │          │ Data Warehouse│
-    │  (S3 API)    │          │              │
-    └──────────────┘          └──────────────┘
+                        Receita Federal
+          https://arquivos.receitafederal.gov.br
+                            |
+                            | Download ZIP (31 arquivos)
+                            v
++-----------------------------------------------------------+
+|                    Apache Airflow 3.1.8                    |
+|  +-----------------------------------------------------+  |
+|  | DAG: receita_federal_csv_generator (TaskFlow API)    |  |
+|  |  1. get_latest_date        (@task)                   |  |
+|  |  2. download_and_extract   (@task, paralelo)         |  |
+|  |  3. process_*              (Spark jobs)              |  |
+|  |  4. load_*                 (ClickHouse, opcional)    |  |
+|  +-----------------------------------------------------+  |
++-----------------------------------------------------------+
+              |                |               |
+    +---------+------+  +-----+------+  +-----+--------+
+    |    MinIO       |  | PostgreSQL |  |  ClickHouse  |
+    |   Data Lake    |  |     DW     |  |  Analitico   |
+    |   (S3 API)     |  |            |  |  (opcional)  |
+    +----------------+  +------------+  +--------------+
 ```
 
-## 📦 Pré-requisitos
+### Servicos Docker (Airflow 3.x)
 
-- **Docker** e **Docker Compose** instalados
-- **4GB+ RAM** disponível para containers
-- **Espaço em disco**: ~50GB para processamento dos dados
+| Servico | Descricao |
+|---|---|
+| `airflow-api-server` | UI + API REST (substitui webserver do 2.x) |
+| `airflow-scheduler` | Agendamento e execucao de tasks |
+| `airflow-dag-processor` | Processamento de DAGs (novo no 3.x, obrigatorio) |
+| `airflow-init` | Migracao do banco e criacao do usuario admin |
+| `postgres` | Metadata do Airflow + Data Warehouse |
+| `minio` | Data Lake S3-compatible |
 
-## 🚀 Instalação
+## Pre-requisitos
 
-### 1. Clone o repositório
+- **Docker** e **Docker Compose** v2.14+ instalados
+- **4GB+ RAM** disponivel para containers
+- **Espaco em disco**: ~50GB para processamento dos dados
+
+## Instalacao
+
+### 1. Clone o repositorio
 
 ```bash
-git clone <url-do-repositorio>
-cd receita-pipeline V2
+git clone https://github.com/fujiiatila-dev/receita-pipeline-csv.git
+cd receita-pipeline-csv
 ```
 
 ### 2. Crie a rede Docker
@@ -94,33 +109,41 @@ cd receita-pipeline V2
 docker network create data-network
 ```
 
-### 3. Configure variáveis de ambiente (opcional)
+### 3. Configure variaveis de ambiente (opcional)
 
 ```bash
+# UID do Airflow
 export AIRFLOW_UID=$(id -u)
+
+# ClickHouse (opcional - sem estas variaveis, pipeline para nos arquivos)
+export CLICKHOUSE_HOST=meu-servidor.clickhouse.cloud
+export CLICKHOUSE_PORT=8443
+export CLICKHOUSE_USER=default
+export CLICKHOUSE_PASSWORD=minha-senha
+export CLICKHOUSE_DATABASE=receita
+export CLICKHOUSE_SECURE=true
 ```
 
 ### 4. Inicie os containers
 
 ```bash
-docker-compose up -d
+docker compose build
+docker compose up -d
 ```
 
-### 5. Aguarde inicialização
-
-O processo completo pode levar alguns minutos. Acompanhe com:
+### 5. Aguarde inicializacao
 
 ```bash
-docker-compose logs -f
+docker compose logs -f
 ```
 
-## 💻 Uso
+## Uso
 
 ### Acessar Interfaces
 
-| Serviço | URL | Credenciais |
-|---------|-----|------------|
-| **Airflow Web UI** | http://localhost:8080 | admin / admin |
+| Servico | URL | Credenciais |
+|---|---|---|
+| **Airflow UI** | http://localhost:8080 | admin / admin |
 | **MinIO Console** | http://localhost:9010 | minioadmin / minioadmin |
 | **PostgreSQL** | localhost:5432 | airflow / airflow |
 
@@ -131,67 +154,84 @@ docker-compose logs -f
 3. Ative a DAG (toggle)
 4. Clique em "Trigger DAG" para executar manualmente
 
-### Monitorar Execução
-
-- Acompanhe o progresso na interface do Airflow
-- Verifique logs individuais de cada task
-- Monitore recursos no MinIO Console
-
-## 📁 Estrutura do Projeto
+### Fluxo de Execucao
 
 ```
-receita-pipeline V2/
+get_latest_date
+      |
+      v
+download_Empresas0..9        download_Estabelecimentos0..9     ...
+      |                              |
+      v                              v
+process_Empresas             process_Estabelecimentos           ...
+      |                              |
+      v                              v
+load_Empresas (ClickHouse)   load_Estabelecimentos (ClickHouse) ...
+```
+
+- Se as credenciais do ClickHouse **nao estiverem configuradas**, as tasks `load_*` finalizam com sucesso sem fazer nada
+- Se as credenciais **estiverem configuradas**, os CSVs processados sao carregados nas tabelas staging do ClickHouse
+
+## Estrutura do Projeto
+
+```
+receita-pipeline-csv/
 ├── dags/
-│   └── download_receita_federal.py    # DAG principal do Airflow
+│   └── download_receita_federal.py     # DAG principal (TaskFlow API)
 ├── scripts/
-│   ├── get_latest_date.py             # Detectar versão mais recente
-│   ├── process_empresas.py            # Processar dados de empresas
-│   ├── process_estabelecimentos.py    # Processar estabelecimentos
-│   ├── process_simples.py             # Processar simples nacional
-│   ├── process_socios.py              # Processar sócios
-│   └── spark_utils.py                 # Utilitários Spark
-├── data/                              # Dados baixados (gitignored)
-│   └── raw/                           # CSVs extraídos
-├── logs/                              # Logs do Airflow (gitignored)
-├── plugins/                           # Plugins customizados do Airflow
-├── Dockerfile                         # Imagem customizada do Airflow
-├── docker-compose.yaml                # Orquestração de containers
-└── README.md                          # Este arquivo
+│   ├── process_empresas.py             # Spark: processar empresas
+│   ├── process_estabelecimentos.py     # Spark: processar estabelecimentos
+│   ├── process_simples.py              # Spark: processar simples nacional
+│   ├── process_socios.py               # Spark: processar socios
+│   ├── spark_utils.py                  # Configuracao SparkSession + Delta + S3
+│   ├── db_clickhouse.py                # Conexao ClickHouse (variaveis de ambiente)
+│   └── load_to_clickhouse.py           # Ingestao CSVs no ClickHouse
+├── data/                               # Dados baixados (gitignored)
+│   ├── raw/                            # CSVs extraidos por periodo
+│   └── output/                         # CSVs processados pelo Spark
+├── logs/                               # Logs do Airflow (gitignored)
+├── plugins/                            # Plugins Airflow (vazio)
+├── Dockerfile                          # Imagem: Airflow 3.1.8 + Spark + Java
+├── docker-compose.yaml                 # Orquestracao de containers
+└── README.md
 ```
 
-## ⚙️ Funcionalidades
+## Funcionalidades
 
 ### 1. Download Inteligente
-
-- ✅ Detecta automaticamente a data mais recente dos dados
-- ✅ Download paralelo de múltiplos arquivos
-- ✅ Extração automática de ZIPs
-- ✅ Renomeação padronizada de arquivos
+- Detecta automaticamente a data mais recente dos dados
+- Download paralelo de 31 arquivos via TaskFlow API
+- Extracao automatica de ZIPs com renomeacao padronizada
+- Skip de arquivos ja baixados (idempotente)
 
 ### 2. Processamento com Spark
+- Processamento distribuido de grandes volumes
+- Schema consistente para todos os tipos de dados
+- Limpeza de dados (encoding, aspas, delimitadores)
+- Integracao com MinIO (S3 API) e Delta Lake
 
-- ✅ Processamento distribuído de grandes volumes
-- ✅ Schema consistente para todos os tipos de dados
-- ✅ Integração com MinIO (S3 API)
-- ✅ Suporte a Delta Lake
+### 3. Ingestao no ClickHouse (opcional)
+- Carregamento automatico dos CSVs processados
+- Graceful degradation: sem credenciais = sem erro
+- Tabelas staging criadas automaticamente
+- Insercao em batches de 50k linhas
 
-### 3. Monitoramento e Logs
+### 4. Monitoramento
+- Interface visual do Airflow (React UI no 3.x)
+- Logs detalhados por task
+- Retry automatico em caso de falhas
 
-- ✅ Interface visual do Airflow
-- ✅ Logs detalhados por task
-- ✅ Retry automático em caso de falhas
-- ✅ Alertas de execução
+## Configuracao
 
-## 🔧 Configuração
+### Variaveis de Ambiente
 
-### Variáveis de Ambiente
-
-As principais configurações estão no `docker-compose.yaml`:
+As configuracoes estao no `docker-compose.yaml`:
 
 ```yaml
 # Airflow
 AIRFLOW__CORE__EXECUTOR: LocalExecutor
 AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
 
 # PostgreSQL (Data Warehouse)
 PG_HOST: postgres
@@ -203,33 +243,68 @@ MINIO_ENDPOINT: http://minio:9000
 MINIO_ACCESS_KEY: minioadmin
 MINIO_SECRET_KEY: minioadmin
 
-# Spark
-JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
-SPARK_HOME: /opt/airflow/spark
+# ClickHouse (opcional)
+CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:-}
+CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8443}
+CLICKHOUSE_USER: ${CLICKHOUSE_USER:-}
+CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-datahealth}
+CLICKHOUSE_SECURE: ${CLICKHOUSE_SECURE:-true}
 ```
 
-### Customização
+### Customizacao
 
-Para modificar credenciais ou configurações:
-
-1. Edite `docker-compose.yaml`
-2. Recrie os containers:
+Para modificar credenciais ou configuracoes:
 
 ```bash
-docker-compose down
-docker-compose up -d
+docker compose down
+# Editar docker-compose.yaml ou exportar variaveis
+docker compose build
+docker compose up -d
 ```
 
-## 📊 Tipos de Dados Processados
+## Migracao Airflow 3.x
 
-| Tipo | Arquivos | Descrição |
-|------|----------|-----------|
-| **Empresas** | Empresas0-9.zip | Dados cadastrais das empresas |
-| **Estabelecimentos** | Estabelecimentos0-9.zip | Filiais e localizações |
-| **Sócios** | Socios0-9.zip | Quadro societário |
-| **Simples** | Simples.zip | Optantes do Simples Nacional |
+Este projeto foi migrado de Airflow 2.9.0 para 3.1.8. Principais mudancas:
 
-## 🐛 Troubleshooting
+### Infraestrutura
+
+| Aspecto | Airflow 2.9 | Airflow 3.1 |
+|---|---|---|
+| Webserver | `airflow webserver` | `airflow api-server` (FastAPI + React) |
+| DAG Processor | Inline no scheduler | Servico separado obrigatorio |
+| PostgreSQL | 13 | 16 |
+| Config key | `AIRFLOW__CORE__SQL_ALCHEMY_CONN` | `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN` |
+
+### DAG / Codigo
+
+| Aspecto | Airflow 2.9 | Airflow 3.1 |
+|---|---|---|
+| Imports | `from airflow.models import DAG` | `from airflow.sdk import DAG, dag, task` |
+| Operators | `from airflow.operators.python` | `from airflow.providers.standard.operators.python` |
+| DAG syntax | `with DAG(...) as dag:` | `@dag` decorator (TaskFlow API) |
+| Tasks | `PythonOperator(callable=fn)` | `@task` decorator |
+| XCom | Pickling suportado | Apenas JSON serializavel |
+| Schedule default | `timedelta(days=1)` | `None` |
+| Catchup default | `True` | `False` |
+
+### Novos recursos utilizados
+
+- **TaskFlow API**: `@dag` e `@task` decorators para codigo mais limpo
+- **Passagem de dados**: retorno de funcao `@task` = XCom automatico (JSON)
+- **React UI**: nova interface mais rapida e moderna
+- **DAG Versioning**: DAG runs completam na versao que iniciaram
+
+## Tipos de Dados Processados
+
+| Tipo | Arquivos | Descricao |
+|---|---|---|
+| **Empresas** | Empresas0-9.zip | Dados cadastrais das empresas (7 colunas) |
+| **Estabelecimentos** | Estabelecimentos0-9.zip | Filiais e localizacoes (30 colunas) |
+| **Socios** | Socios0-9.zip | Quadro societario (11 colunas) |
+| **Simples** | Simples.zip | Optantes do Simples Nacional (7 colunas) |
+
+## Troubleshooting
 
 ### Erro "network data-network not found"
 
@@ -237,37 +312,46 @@ docker-compose up -d
 docker network create data-network
 ```
 
-### Containers não sobem
+### Containers nao sobem
 
 ```bash
-docker-compose down -v
-docker-compose up -d
+docker compose down -v
+docker compose build
+docker compose up -d
 ```
 
-### Falta de memória
+### Falta de memoria
 
 Aumente recursos do Docker:
-- Docker Desktop → Settings → Resources
-- Mínimo recomendado: 4GB RAM
+- Docker Desktop > Settings > Resources
+- Minimo recomendado: 4GB RAM, 4 CPUs
 
-## 📝 Licença
+### DAG nao aparece na UI
 
-Este projeto é de código aberto e está disponível para uso educacional e comercial.
+Verifique se o `airflow-dag-processor` esta rodando:
+```bash
+docker compose logs airflow-dag-processor
+```
 
-## 👥 Contribuindo
+### Erro de importacao (airflow.sdk)
 
-Contribuições são bem-vindas! Para contribuir:
+Certifique-se de que a imagem foi reconstruida com Airflow 3.1.8:
+```bash
+docker compose build --no-cache
+```
+
+## Licenca
+
+Este projeto e de codigo aberto e esta disponivel para uso educacional e comercial.
+
+## Contribuindo
 
 1. Fork o projeto
-2. Crie uma branch para sua feature (`git checkout -b feature/AmazingFeature`)
-3. Commit suas mudanças (`git commit -m 'Add some AmazingFeature'`)
-4. Push para a branch (`git push origin feature/AmazingFeature`)
+2. Crie uma branch (`git checkout -b feature/nova-feature`)
+3. Commit suas mudancas (`git commit -m 'feat: descricao'`)
+4. Push para a branch (`git push origin feature/nova-feature`)
 5. Abra um Pull Request
-
-## 📮 Contato
-
-Para dúvidas ou sugestões, abra uma issue no repositório.
 
 ---
 
-**Desenvolvido com ❤️ para facilitar o acesso aos dados abertos da Receita Federal**
+Desenvolvido para facilitar o acesso aos dados abertos da Receita Federal.
