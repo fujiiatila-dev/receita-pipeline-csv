@@ -6,6 +6,7 @@ import requests
 import zipfile
 import re
 import shutil
+from xml.etree import ElementTree
 from airflow.models.dag import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
@@ -15,24 +16,35 @@ sys.path.append("/opt/airflow/scripts")
 
 # --- CONFIG ---
 LOCAL_DATA_PATH = "/opt/airflow/data"
+NEXTCLOUD_BASE = "https://arquivos.receitafederal.gov.br/public.php/dav/files/YggdBLfdninEJX9"
 
 def get_latest_exec_date(**kwargs):
     """
-    Scrapes the website to find the latest YYYY-MM folder.
-    Returns it via XCom.
+    Lista as pastas disponíveis via WebDAV PROPFIND e retorna a mais recente (YYYY-MM).
     """
-    url = "https://arquivos.receitafederal.gov.br/cnpj/dados_abertos_cnpj/"
-    print(f"Fetching latest date from {url}...")
+    print(f"Fetching latest date via WebDAV from {NEXTCLOUD_BASE}/ ...")
     try:
-        response = requests.get(url, timeout=30)
+        response = requests.request(
+            "PROPFIND",
+            f"{NEXTCLOUD_BASE}/",
+            headers={"Depth": "1"},
+            timeout=30,
+        )
         response.raise_for_status()
-        
-        matches = re.findall(r'href="(\d{4}-\d{2})/"', response.text)
-        if not matches:
-            matches = re.findall(r'>(\d{4}-\d{2})/<', response.text)
+
+        # Parse WebDAV XML para extrair nomes de pastas
+        root = ElementTree.fromstring(response.content)
+        ns = {"d": "DAV:"}
+        hrefs = [el.text for el in root.findall(".//d:href", ns) if el.text]
+
+        matches = []
+        for href in hrefs:
+            m = re.search(r'(\d{4}-\d{2})/?$', href)
+            if m:
+                matches.append(m.group(1))
 
         if not matches:
-            raise Exception("No date pattern found on the page.")
+            raise Exception("No date pattern found in WebDAV listing.")
 
         latest_date = sorted(matches)[-1]
         print(f"Latest date found: {latest_date}")
@@ -50,7 +62,7 @@ def download_and_extract(file_name, ti):
     if not mes_ano:
         raise ValueError("Date not found in XCom.")
 
-    url = f"https://arquivos.receitafederal.gov.br/cnpj/dados_abertos_cnpj/{mes_ano}/{file_name}"
+    url = f"{NEXTCLOUD_BASE}/{mes_ano}/{file_name}"
     local_zip = os.path.join(LOCAL_DATA_PATH, file_name)
     
     # Raw destination: /opt/airflow/data/raw/{mes_ano}/
