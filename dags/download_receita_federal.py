@@ -1,68 +1,65 @@
+"""
+DAG: receita_federal_csv_generator
+Pipeline de dados da Receita Federal (CNPJ) - Airflow 3.x com TaskFlow API.
+"""
 from __future__ import annotations
-import pendulum
+
 import os
-import sys
-import requests
-import zipfile
 import re
 import shutil
-from airflow.models.dag import DAG
-from airflow.operators.python import PythonOperator
-from airflow.operators.bash import BashOperator
+import zipfile
 
-# Add scripts to path to import helpers if needed, though we'll implement logic inline for simplicity/robustness
-sys.path.append("/opt/airflow/scripts")
+import pendulum
+import requests
+from airflow.sdk import DAG, dag, task
+from airflow.providers.standard.operators.bash import BashOperator
 
 # --- CONFIG ---
 LOCAL_DATA_PATH = "/opt/airflow/data"
 
-def get_latest_exec_date(**kwargs):
-    """
-    Scrapes the website to find the latest YYYY-MM folder.
-    Returns it via XCom.
-    """
+FILES_GROUP_MAP = {
+    "Empresas": [f"Empresas{i}.zip" for i in range(10)],
+    "Estabelecimentos": [f"Estabelecimentos{i}.zip" for i in range(10)],
+    "Socios": [f"Socios{i}.zip" for i in range(10)],
+    "Simples": ["Simples.zip"],
+}
+
+
+@task
+def get_latest_date() -> str:
+    """Busca a data mais recente disponivel no site da Receita Federal."""
     url = "https://arquivos.receitafederal.gov.br/cnpj/dados_abertos_cnpj/"
     print(f"Fetching latest date from {url}...")
-    try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        
-        matches = re.findall(r'href="(\d{4}-\d{2})/"', response.text)
-        if not matches:
-            matches = re.findall(r'>(\d{4}-\d{2})/<', response.text)
 
-        if not matches:
-            raise Exception("No date pattern found on the page.")
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
 
-        latest_date = sorted(matches)[-1]
-        print(f"Latest date found: {latest_date}")
-        return latest_date
-    except Exception as e:
-        print(f"Error: {e}")
-        raise
+    matches = re.findall(r'href="(\d{4}-\d{2})/"', response.text)
+    if not matches:
+        matches = re.findall(r'>(\d{4}-\d{2})/<', response.text)
+    if not matches:
+        raise Exception("No date pattern found on the page.")
 
-def download_and_extract(file_name, ti):
-    """
-    Downloads ZIP, extracts CSV to local raw folder, renames it to specific pattern.
-    """
-    # Get latest date from XCom
-    mes_ano = ti.xcom_pull(task_ids='get_latest_date')
-    if not mes_ano:
-        raise ValueError("Date not found in XCom.")
+    latest_date = sorted(matches)[-1]
+    print(f"Latest date found: {latest_date}")
+    return latest_date
 
+
+@task
+def download_and_extract(file_name: str, mes_ano: str) -> str:
+    """Baixa ZIP da Receita, extrai CSV e renomeia."""
     url = f"https://arquivos.receitafederal.gov.br/cnpj/dados_abertos_cnpj/{mes_ano}/{file_name}"
     local_zip = os.path.join(LOCAL_DATA_PATH, file_name)
-    
-    # Raw destination: /opt/airflow/data/raw/{mes_ano}/
+
     raw_dest_dir = os.path.join(LOCAL_DATA_PATH, "raw", mes_ano)
     os.makedirs(raw_dest_dir, exist_ok=True)
-    
+
     # 1. Download
     print(f"--- Downloading {url} ---")
     if not os.path.exists(local_zip):
-        with requests.get(url, stream=True, timeout=6000) as r: # Extended timeout for big files
+        with requests.get(url, stream=True, timeout=6000) as r:
             r.raise_for_status()
-            with open(local_zip, 'wb') as f:
+            with open(local_zip, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
         print("Download finished.")
@@ -71,91 +68,66 @@ def download_and_extract(file_name, ti):
 
     # 2. Extract
     print("--- Extracting ---")
-    valid_extensions = ('.csv', '.emprecsv', '.estabele', '.socio', '.simples', '.txt')
-    
+    valid_extensions = (".csv", ".emprecsv", ".estabele", ".socio", ".simples", ".txt")
+
     try:
-        with zipfile.ZipFile(local_zip, 'r') as z:
+        with zipfile.ZipFile(local_zip, "r") as z:
             target_info = None
             for info in z.infolist():
                 if info.filename.lower().endswith(valid_extensions):
                     target_info = info
                     break
-            
+
             if not target_info:
-                # Fallback: largest file
                 target_info = max(z.infolist(), key=lambda x: x.file_size)
-            
+
             print(f"Extracting {target_info.filename}...")
-            
-            # Extract to a temp location first or directly
-            # We want to rename it immediately to {file_name_stem}.csv
-            # e.g. Empresas0.zip -> Empresas0.csv inside raw dir
-            
             extracted_path = z.extract(target_info, raw_dest_dir)
-            
-            # Determine new name
-            base_name = os.path.splitext(file_name)[0] # Empresas0
+
+            base_name = os.path.splitext(file_name)[0]
             new_name = f"{base_name}.csv"
             final_path = os.path.join(raw_dest_dir, new_name)
-            
+
             print(f"Renaming {extracted_path} to {final_path}")
             shutil.move(extracted_path, final_path)
-            
+
     except Exception as e:
         print(f"Extraction failed: {e}")
         raise
-    
+
     # 3. Cleanup Zip
     try:
         os.remove(local_zip)
-    except:
+    except OSError:
         pass
 
+    return final_path
 
-FILES_GROUP_MAP = {
-    "Empresas": [f"Empresas{i}.zip" for i in range(10)],
-    "Estabelecimentos": [f"Estabelecimentos{i}.zip" for i in range(10)],
-    "Socios": [f"Socios{i}.zip" for i in range(10)],
-    "Simples": ["Simples.zip"]
-}
 
-with DAG(
+@dag(
     dag_id="receita_federal_csv_generator",
     start_date=pendulum.datetime(2025, 1, 1, tz="UTC"),
     schedule=None,
     catchup=False,
-    default_args={'pool': 'spark_pool'}, 
-) as dag:
+    default_args={"pool": "spark_pool"},
+)
+def receita_federal_pipeline():
+    # 1. Obter data mais recente
+    latest_date = get_latest_date()
 
-    # 1. Get Date
-    task_date = PythonOperator(
-        task_id="get_latest_date",
-        python_callable=get_latest_exec_date
-    )
-
-    # 2. Process Groups (Download -> Spark)
-    # We iterate over types (Empresas, Socios...)
-    
+    # 2. Para cada grupo: download em paralelo → processamento Spark
     for type_name, file_list in FILES_GROUP_MAP.items():
-        
-        # Determine script name
         script_name = f"process_{type_name.lower()}.py"
-        
-        # Download Tasks
-        download_tasks = []
-        for f_name in file_list:
-            t_down = PythonOperator(
-                task_id=f"download_{os.path.splitext(f_name)[0]}",
-                python_callable=download_and_extract,
-                op_kwargs={'file_name': f_name}
+
+        # Downloads em paralelo (TaskFlow expande automaticamente)
+        download_tasks = [
+            download_and_extract.override(task_id=f"download_{os.path.splitext(f)[0]}")(
+                file_name=f, mes_ano=latest_date
             )
-            download_tasks.append(t_down)
-        
-        # Process Task (Runs once per Type, after ALL downloads for that type are done)
-        # Passes the Date and Type to the script
-        # Script expects: <DATE> <TYPE>
-        # e.g. 2025-05 Empresas
-        
+            for f in file_list
+        ]
+
+        # Processamento Spark (roda apos todos downloads do grupo)
         process_cmd = f"""
         spark-submit \
         --packages io.delta:delta-spark_2.12:3.0.0 \
@@ -167,12 +139,27 @@ with DAG(
         "{{{{ ti.xcom_pull(task_ids='get_latest_date') }}}}" \
         "{type_name}"
         """
-        # Note: increased driver memory to 4g for merging
-        
+
         task_process = BashOperator(
             task_id=f"process_{type_name}",
-            bash_command=process_cmd
+            bash_command=process_cmd,
         )
-        
-        # Link: Get Date -> Downloads -> Process
-        task_date >> download_tasks >> task_process
+
+        # Ingestao no ClickHouse (graceful - nao falha se sem credenciais)
+        load_cmd = f"""
+        python /opt/airflow/scripts/load_to_clickhouse.py \
+        "{{{{ ti.xcom_pull(task_ids='get_latest_date') }}}}" \
+        "{type_name}"
+        """
+
+        task_load = BashOperator(
+            task_id=f"load_{type_name}",
+            bash_command=load_cmd,
+        )
+
+        # Dependencias: downloads → processamento → ingestao ClickHouse
+        download_tasks >> task_process >> task_load
+
+
+# Instanciar a DAG
+receita_federal_pipeline()
