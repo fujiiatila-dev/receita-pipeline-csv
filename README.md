@@ -56,6 +56,7 @@ Este projeto implementa um pipeline completo de dados que:
 ### Visao Geral do Pipeline
 
 ```mermaid
+%%{init: {'theme': 'dark'}}%%
 graph TB
     subgraph Fonte["Fonte de Dados"]
         RF["Receita Federal<br/>arquivos.receitafederal.gov.br"]
@@ -109,21 +110,22 @@ graph TB
     Spark -->|"CSV output"| PG
     Load -->|"Staging tables"| CH
 
-    style Fonte fill:#e8f5e9,stroke:#2e7d32
-    style Airflow fill:#e3f2fd,stroke:#1565c0
-    style Downloads fill:#fff3e0,stroke:#e65100
-    style Spark fill:#fce4ec,stroke:#c62828
-    style Load fill:#f3e5f5,stroke:#6a1b9a
-    style Storage fill:#f5f5f5,stroke:#616161
-    style RF fill:#e8f5e9,stroke:#2e7d32
-    style MINIO fill:#fff9c4,stroke:#f57f17
-    style PG fill:#bbdefb,stroke:#1565c0
-    style CH fill:#e1bee7,stroke:#6a1b9a
+    style Fonte fill:#1a3a2a,stroke:#4caf50,color:#e0e0e0
+    style Airflow fill:#0d2137,stroke:#42a5f5,color:#e0e0e0
+    style Downloads fill:#2e1a00,stroke:#ff9800,color:#e0e0e0
+    style Spark fill:#2a0a0a,stroke:#ef5350,color:#e0e0e0
+    style Load fill:#1a0a2a,stroke:#ab47bc,color:#e0e0e0
+    style Storage fill:#1a1a1a,stroke:#757575,color:#e0e0e0
+    style RF fill:#1a3a2a,stroke:#4caf50,color:#e0e0e0
+    style MINIO fill:#2a2500,stroke:#fdd835,color:#e0e0e0
+    style PG fill:#0d2137,stroke:#42a5f5,color:#e0e0e0
+    style CH fill:#1a0a2a,stroke:#ab47bc,color:#e0e0e0
 ```
 
 ### Servicos Docker (Airflow 3.x)
 
 ```mermaid
+%%{init: {'theme': 'dark'}}%%
 graph LR
     subgraph Docker["Docker Compose"]
         direction TB
@@ -146,14 +148,14 @@ graph LR
     USER["Usuario"] -->|"http://localhost:8080"| API
     USER -->|"http://localhost:9010"| MN
 
-    style Docker fill:#e3f2fd,stroke:#1565c0
-    style INIT fill:#c8e6c9,stroke:#2e7d32
-    style API fill:#bbdefb,stroke:#1565c0
-    style SCH fill:#bbdefb,stroke:#1565c0
-    style DAG fill:#fff3e0,stroke:#e65100
-    style PG fill:#e1bee7,stroke:#6a1b9a
-    style MN fill:#fff9c4,stroke:#f57f17
-    style USER fill:#f5f5f5,stroke:#616161
+    style Docker fill:#0d2137,stroke:#42a5f5,color:#e0e0e0
+    style INIT fill:#1a3a2a,stroke:#4caf50,color:#e0e0e0
+    style API fill:#0d2137,stroke:#42a5f5,color:#e0e0e0
+    style SCH fill:#0d2137,stroke:#42a5f5,color:#e0e0e0
+    style DAG fill:#2e1a00,stroke:#ff9800,color:#e0e0e0
+    style PG fill:#1a0a2a,stroke:#ab47bc,color:#e0e0e0
+    style MN fill:#2a2500,stroke:#fdd835,color:#e0e0e0
+    style USER fill:#1a1a1a,stroke:#757575,color:#e0e0e0
 ```
 
 ### Servicos Docker
