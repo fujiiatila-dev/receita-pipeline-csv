@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import zipfile
+from xml.etree import ElementTree
 
 import pendulum
 import requests
@@ -16,6 +17,7 @@ from airflow.providers.standard.operators.bash import BashOperator
 
 # --- CONFIG ---
 LOCAL_DATA_PATH = "/opt/airflow/data"
+NEXTCLOUD_BASE = "https://arquivos.receitafederal.gov.br/public.php/dav/files/YggdBLfdninEJX9"
 
 FILES_GROUP_MAP = {
     "Empresas": [f"Empresas{i}.zip" for i in range(10)],
@@ -27,18 +29,29 @@ FILES_GROUP_MAP = {
 
 @task
 def get_latest_date() -> str:
-    """Busca a data mais recente disponivel no site da Receita Federal."""
-    url = "https://arquivos.receitafederal.gov.br/cnpj/dados_abertos_cnpj/"
-    print(f"Fetching latest date from {url}...")
+    """Lista pastas via WebDAV PROPFIND e retorna a mais recente (YYYY-MM)."""
+    print(f"Fetching latest date via WebDAV from {NEXTCLOUD_BASE}/ ...")
 
-    response = requests.get(url, timeout=30)
+    response = requests.request(
+        "PROPFIND",
+        f"{NEXTCLOUD_BASE}/",
+        headers={"Depth": "1"},
+        timeout=30,
+    )
     response.raise_for_status()
 
-    matches = re.findall(r'href="(\d{4}-\d{2})/"', response.text)
+    root = ElementTree.fromstring(response.content)
+    ns = {"d": "DAV:"}
+    hrefs = [el.text for el in root.findall(".//d:href", ns) if el.text]
+
+    matches = []
+    for href in hrefs:
+        m = re.search(r'(\d{4}-\d{2})/?$', href)
+        if m:
+            matches.append(m.group(1))
+
     if not matches:
-        matches = re.findall(r'>(\d{4}-\d{2})/<', response.text)
-    if not matches:
-        raise Exception("No date pattern found on the page.")
+        raise Exception("No date pattern found in WebDAV listing.")
 
     latest_date = sorted(matches)[-1]
     print(f"Latest date found: {latest_date}")
@@ -48,7 +61,7 @@ def get_latest_date() -> str:
 @task
 def download_and_extract(file_name: str, mes_ano: str) -> str:
     """Baixa ZIP da Receita, extrai CSV e renomeia."""
-    url = f"https://arquivos.receitafederal.gov.br/cnpj/dados_abertos_cnpj/{mes_ano}/{file_name}"
+    url = f"{NEXTCLOUD_BASE}/{mes_ano}/{file_name}"
     local_zip = os.path.join(LOCAL_DATA_PATH, file_name)
 
     raw_dest_dir = os.path.join(LOCAL_DATA_PATH, "raw", mes_ano)
