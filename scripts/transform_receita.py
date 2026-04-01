@@ -96,9 +96,9 @@ def create_final_table(client, periodo):
     SELECT
         -- CNPJ completo
         concat(e.cnpj_basico, e.cnpj_ordem, e.cnpj_dv) AS cnpj,
-        e.cnpj_basico,
-        e.cnpj_ordem,
-        e.cnpj_dv,
+        e.cnpj_basico AS cnpj_basico,
+        e.cnpj_ordem AS cnpj_ordem,
+        e.cnpj_dv AS cnpj_dv,
 
         -- Matriz/Filial
         e.identificador_matriz_filial AS matriz_filial,
@@ -139,8 +139,8 @@ def create_final_table(client, periodo):
         e.complemento,
         e.bairro,
         e.cep,
-        e.uf,
-        e.municipio,
+        e.uf AS uf,
+        e.municipio AS municipio,
         dm.descricao_municipios AS desc_municipio,
 
         -- Contato
