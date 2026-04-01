@@ -215,3 +215,17 @@ with DAG(
     )
 
     all_load_tasks >> task_transform
+
+    # 4. Limpeza de arquivos locais (somente apos sucesso de tudo)
+    cleanup_cmd = """
+    rm -rf /opt/airflow/data/raw/{{ ti.xcom_pull(task_ids='get_latest_date') }}
+    rm -f /opt/airflow/data/output/*_{{ ti.xcom_pull(task_ids='get_latest_date') }}.csv
+    """
+
+    task_cleanup = BashOperator(
+        task_id="cleanup_local_data",
+        bash_command=cleanup_cmd,
+        trigger_rule="all_success"
+    )
+
+    task_transform >> task_cleanup

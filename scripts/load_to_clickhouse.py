@@ -163,21 +163,6 @@ def load_csv_to_clickhouse(mes_ano, type_name):
 
     print(f"[Load] Ingestao concluida: {table_name} ({total} registros)")
 
-    # Limpar arquivos locais apos ingestao bem sucedida
-    try:
-        os.remove(csv_path)
-        print(f"[Load] CSV removido: {csv_path}")
-
-        raw_dir = os.path.join(BASE_DIR, "raw", mes_ano)
-        if os.path.exists(raw_dir):
-            for f in os.listdir(raw_dir):
-                if f.startswith(type_name):
-                    raw_path = os.path.join(raw_dir, f)
-                    os.remove(raw_path)
-                    print(f"[Load] Raw removido: {raw_path}")
-    except OSError as e:
-        print(f"[Load] Aviso ao limpar arquivos: {e}")
-
     return True
 
 
