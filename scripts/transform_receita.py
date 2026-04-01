@@ -155,8 +155,8 @@ def create_final_table(client, periodo):
         parseDateTimeBestEffortOrNull(e.data_situacao_especial) AS data_situacao_especial,
 
         -- Geocoding (NULL por enquanto - preenchido por outro processo)
-        NULL AS latitude,
-        NULL AS longitude,
+        CAST(NULL AS Nullable(Float32)) AS latitude,
+        CAST(NULL AS Nullable(Float32)) AS longitude,
 
         -- Dados da empresa
         emp.razao_social,
