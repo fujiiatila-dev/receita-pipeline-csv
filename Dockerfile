@@ -19,11 +19,8 @@ RUN wget -q https://archive.apache.org/dist/spark/spark-3.5.0/spark-3.5.0-bin-ha
     rm spark-3.5.0-bin-hadoop3.tgz
 
 # 4. DOWNLOAD DE JARS CRITICOS (Postgres + Integracao com MinIO/S3)
-# Postgres Driver
 RUN wget -q https://jdbc.postgresql.org/download/postgresql-42.7.3.jar -O $SPARK_HOME/jars/postgresql-42.7.3.jar
-# Hadoop AWS (Necessario para s3a://)
 RUN wget -q https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar -O $SPARK_HOME/jars/hadoop-aws-3.3.4.jar
-# AWS Java SDK Bundle (Necessario para s3a://)
 RUN wget -q https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar -O $SPARK_HOME/jars/aws-java-sdk-bundle-1.12.262.jar
 
 USER airflow

@@ -1,25 +1,47 @@
 """
-Script de ingestão dos CSVs processados no ClickHouse.
-Pode ser chamado via BashOperator ou PythonOperator no Airflow.
+Ingestao dos CSVs processados no ClickHouse como tabelas staging.
 Uso: python load_to_clickhouse.py <mes_ano> <tipo>
-  ex: python load_to_clickhouse.py 2025-05 Empresas
+  ex: python load_to_clickhouse.py 2026-03 Empresas
 """
 import sys
 import os
-import pandas as pd
+import csv
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from db_clickhouse import get_clickhouse_client
 
-# Mapeamento tipo → nome da tabela no ClickHouse
-TABLE_MAP = {
-    "Empresas": "receita.empresas_{periodo}",
-    "Estabelecimentos": "receita.estabelecimentos_{periodo}",
-    "Socios": "receita.socios_{periodo}",
-    "Simples": "receita.simples_{periodo}",
+# Schema de cada tipo de dado
+SCHEMAS = {
+    "Empresas": [
+        "cnpj_basico", "razao_social", "natureza_juridica",
+        "qualificacao_responsavel", "capital_social", "porte_empresa",
+        "ente_federativo_responsavel",
+    ],
+    "Estabelecimentos": [
+        "cnpj_basico", "cnpj_ordem", "cnpj_dv", "identificador_matriz_filial",
+        "nome_fantasia", "situacao_cadastral", "data_situacao_cadastral",
+        "motivo_situacao_cadastral", "nome_cidade_exterior", "pais",
+        "data_inicio_atividade", "cnae_fiscal_principal", "cnae_fiscal_secundaria",
+        "tipo_logradouro", "logradouro", "numero", "complemento", "bairro",
+        "cep", "uf", "municipio", "ddd_1", "telefone_1", "ddd_2", "telefone_2",
+        "ddd_fax", "fax", "correio_eletronico", "situacao_especial",
+        "data_situacao_especial",
+    ],
+    "Socios": [
+        "cnpj_basico", "identificador_socio", "nome_socio_razao_social",
+        "cpf_cnpj_socio", "qualificacao_socio", "data_entrada_sociedade",
+        "pais", "representante_legal", "nome_representante",
+        "qualificacao_representante_legal", "faixa_etaria",
+    ],
+    "Simples": [
+        "cnpj_basico", "opcao_simples", "data_opcao_simples",
+        "data_exclusao_simples", "opcao_mei", "data_opcao_mei",
+        "data_exclusao_mei",
+    ],
 }
 
 BASE_DIR = "/opt/airflow/data"
+DATABASE = "empresas_ativas_do_brasil"
 
 
 def load_csv_to_clickhouse(mes_ano, type_name):
@@ -36,26 +58,19 @@ def load_csv_to_clickhouse(mes_ano, type_name):
         print(f"[Load] CSV nao encontrado: {csv_path}")
         return False
 
-    table_template = TABLE_MAP.get(type_name)
-    if not table_template:
+    columns = SCHEMAS.get(type_name)
+    if not columns:
         print(f"[Load] Tipo desconhecido: {type_name}")
         return False
 
-    table_name = table_template.format(periodo=periodo)
+    table_name = f"{DATABASE}.{type_name.lower()}_{periodo}"
 
     print(f"[Load] Carregando {csv_path} -> {table_name}")
-
-    df = pd.read_csv(csv_path, sep=";", encoding="ISO-8859-1", dtype=str)
-    print(f"[Load] {len(df)} registros lidos do CSV")
 
     # Drop e recria tabela
     client.command(f"DROP TABLE IF EXISTS {table_name}")
 
-    cols = []
-    for col in df.columns:
-        cols.append(f"`{col}` Nullable(String)")
-    cols_sql = ",\n        ".join(cols)
-
+    cols_sql = ",\n        ".join([f"`{col}` String" for col in columns])
     ddl = f"""
     CREATE TABLE {table_name}
     (
@@ -66,27 +81,64 @@ def load_csv_to_clickhouse(mes_ano, type_name):
     SETTINGS index_granularity = 8192
     """
     client.command(ddl)
-    print(f"[Load] Tabela {table_name} criada com {len(df.columns)} colunas")
+    print(f"[Load] Tabela {table_name} criada com {len(columns)} colunas")
 
-    # Inserir dados em batches
-    columns = list(df.columns)
-    df = df.where(pd.notnull(df), None)
-    data = df.values.tolist()
+    # Ler CSV com delimitador ; e inserir em batches
     batch_size = 50000
+    batch = []
+    total = 0
 
-    for i in range(0, len(data), batch_size):
-        batch = data[i : i + batch_size]
+    with open(csv_path, "r", encoding="ISO-8859-1") as f:
+        reader = csv.reader(f, delimiter=";")
+        next(reader, None)  # skip header
+
+        for row in reader:
+            # Garantir que a linha tem o numero certo de colunas
+            if len(row) < len(columns):
+                row.extend([""] * (len(columns) - len(row)))
+            elif len(row) > len(columns):
+                row = row[: len(columns)]
+
+            # Limpar aspas residuais
+            row = [field.replace('"', '').strip() for field in row]
+
+            batch.append(row)
+            total += 1
+
+            if len(batch) >= batch_size:
+                client.insert(table_name, batch, column_names=columns)
+                print(f"[Load] Inseridos {total} registros...")
+                batch = []
+
+    # Inserir batch restante
+    if batch:
         client.insert(table_name, batch, column_names=columns)
-        print(f"[Load] Inseridos {min(i + batch_size, len(data))}/{len(data)} registros")
 
-    print(f"[Load] Ingestao concluida: {table_name}")
+    print(f"[Load] Ingestao concluida: {table_name} ({total} registros)")
+
+    # Limpar arquivos locais apos ingestao bem sucedida
+    try:
+        os.remove(csv_path)
+        print(f"[Load] CSV removido: {csv_path}")
+
+        # Remover CSVs raw do tipo correspondente
+        raw_dir = os.path.join(BASE_DIR, "raw", mes_ano)
+        if os.path.exists(raw_dir):
+            for f in os.listdir(raw_dir):
+                if f.startswith(type_name):
+                    raw_path = os.path.join(raw_dir, f)
+                    os.remove(raw_path)
+                    print(f"[Load] Raw removido: {raw_path}")
+    except OSError as e:
+        print(f"[Load] Aviso ao limpar arquivos: {e}")
+
     return True
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Uso: load_to_clickhouse.py <mes_ano> <tipo>")
-        print("  ex: load_to_clickhouse.py 2025-05 Empresas")
+        print("  ex: load_to_clickhouse.py 2026-03 Empresas")
         sys.exit(1)
 
     mes_ano = sys.argv[1]
@@ -94,6 +146,5 @@ if __name__ == "__main__":
 
     success = load_csv_to_clickhouse(mes_ano, type_name)
     if not success:
-        print("[Load] Ingestao nao realizada (sem credenciais ou erro).")
-        # Nao falha — graceful degradation
+        print("[Load] Ingestao nao realizada.")
         sys.exit(0)

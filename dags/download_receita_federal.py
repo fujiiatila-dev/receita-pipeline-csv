@@ -128,7 +128,9 @@ def receita_federal_pipeline():
     # 1. Obter data mais recente
     latest_date = get_latest_date()
 
-    # 2. Para cada grupo: download em paralelo -> processamento Spark -> ingestao
+    # 2. Para cada grupo: download -> processamento Spark -> ingestao ClickHouse
+    all_load_tasks = []
+
     for type_name, file_list in FILES_GROUP_MAP.items():
         script_name = f"process_{type_name.lower()}.py"
 
@@ -140,7 +142,7 @@ def receita_federal_pipeline():
             for f in file_list
         ]
 
-        # Processamento Spark (roda apos todos downloads do grupo)
+        # Processamento Spark
         process_cmd = f"""
         spark-submit \
         --packages io.delta:delta-spark_2.12:3.0.0 \
@@ -170,8 +172,23 @@ def receita_federal_pipeline():
             bash_command=load_cmd,
         )
 
-        # Dependencias: downloads -> processamento -> ingestao ClickHouse
+        all_load_tasks.append(task_load)
+
+        # Dependencias: downloads -> processamento -> ingestao
         download_tasks >> task_process >> task_load
+
+    # 3. Transformacao final (roda apos todas as ingestoes)
+    transform_cmd = """
+    python /opt/airflow/scripts/transform_receita.py \
+    "$(echo '{{ ti.xcom_pull(task_ids="get_latest_date") }}' | tr -d '-')"
+    """
+
+    task_transform = BashOperator(
+        task_id="transform_final",
+        bash_command=transform_cmd,
+    )
+
+    all_load_tasks >> task_transform
 
 
 # Instanciar a DAG
