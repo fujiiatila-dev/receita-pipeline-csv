@@ -3,7 +3,7 @@ import sys
 import os
 import glob
 import shutil
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, regexp_replace
 from spark_utils import get_spark_session 
 
 if len(sys.argv) < 3:
@@ -35,22 +35,23 @@ try:
     # Mapeamento do Layout Simples Nacional
     # O arquivo tem 7 colunas
     df_final = df.select(
-        col("_c0").alias("cnpj_basico"),
-        col("_c1").alias("opcao_simples"),          # S ou N
-        col("_c2").alias("data_opcao_simples"),
-        col("_c3").alias("data_exclusao_simples"),
-        col("_c4").alias("opcao_mei"),              # S ou N
-        col("_c5").alias("data_opcao_mei"),
-        col("_c6").alias("data_exclusao_mei")
+        regexp_replace(col("_c0"), '"', '').alias("cnpj_basico"),
+        regexp_replace(col("_c1"), '"', '').alias("opcao_simples"),          # S ou N
+        regexp_replace(col("_c2"), '"', '').alias("data_opcao_simples"),
+        regexp_replace(col("_c3"), '"', '').alias("data_exclusao_simples"),
+        regexp_replace(col("_c4"), '"', '').alias("opcao_mei"),              # S ou N
+        regexp_replace(col("_c5"), '"', '').alias("data_opcao_mei"),
+        regexp_replace(col("_c6"), '"', '').alias("data_exclusao_mei")
     )
 
     print(f"Gerando CSV único em: {TEMP_OUTPUT_DIR}")
-    
+
     # Grava como CSV único (coalesce(1))
     df_final.coalesce(1).write \
         .format("csv") \
         .option("header", "true") \
         .option("delimiter", ";") \
+        .option("quote", "\u0000") \
         .option("encoding", "ISO-8859-1") \
         .mode("overwrite") \
         .save(TEMP_OUTPUT_DIR)

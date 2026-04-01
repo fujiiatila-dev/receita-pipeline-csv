@@ -32,26 +32,27 @@ try:
 
     # Mapeamento das 11 colunas de Sócios
     df_final = df.select(
-        col("_c0").alias("cnpj_basico"),
-        col("_c1").alias("identificador_socio"),
-        regexp_replace(col("_c2"), "\"", "").alias("nome_socio_razao_social"),
-        col("_c3").alias("cpf_cnpj_socio"),
-        regexp_replace(col("_c4"), "\"", "").alias("qualificacao_socio"),
-        col("_c5").alias("data_entrada_sociedade"),
-        regexp_replace(col("_c6"), "\"", "").alias("pais"),
-        col("_c7").alias("representante_legal"),
-        regexp_replace(col("_c8"), "\"", "").alias("nome_representante"),
-        regexp_replace(col("_c9"), "\"", "").alias("qualificacao_representante_legal"),
-        col("_c10").alias("faixa_etaria")
+        regexp_replace(col("_c0"), '"', '').alias("cnpj_basico"),
+        regexp_replace(col("_c1"), '"', '').alias("identificador_socio"),
+        regexp_replace(col("_c2"), '"', '').alias("nome_socio_razao_social"),
+        regexp_replace(col("_c3"), '"', '').alias("cpf_cnpj_socio"),
+        regexp_replace(col("_c4"), '"', '').alias("qualificacao_socio"),
+        regexp_replace(col("_c5"), '"', '').alias("data_entrada_sociedade"),
+        regexp_replace(col("_c6"), '"', '').alias("pais"),
+        regexp_replace(col("_c7"), '"', '').alias("representante_legal"),
+        regexp_replace(col("_c8"), '"', '').alias("nome_representante"),
+        regexp_replace(col("_c9"), '"', '').alias("qualificacao_representante_legal"),
+        regexp_replace(col("_c10"), '"', '').alias("faixa_etaria")
     )
 
     print(f"Gerando CSV único em: {TEMP_OUTPUT_DIR}")
-    
+
     # Grava como CSV único (coalesce(1))
     df_final.coalesce(1).write \
         .format("csv") \
         .option("header", "true") \
         .option("delimiter", ";") \
+        .option("quote", "\u0000") \
         .option("encoding", "ISO-8859-1") \
         .mode("overwrite") \
         .save(TEMP_OUTPUT_DIR)

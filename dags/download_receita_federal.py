@@ -128,7 +128,7 @@ def receita_federal_pipeline():
     # 1. Obter data mais recente
     latest_date = get_latest_date()
 
-    # 2. Para cada grupo: download em paralelo → processamento Spark
+    # 2. Para cada grupo: download em paralelo -> processamento Spark -> ingestao
     for type_name, file_list in FILES_GROUP_MAP.items():
         script_name = f"process_{type_name.lower()}.py"
 
@@ -170,7 +170,7 @@ def receita_federal_pipeline():
             bash_command=load_cmd,
         )
 
-        # Dependencias: downloads → processamento → ingestao ClickHouse
+        # Dependencias: downloads -> processamento -> ingestao ClickHouse
         download_tasks >> task_process >> task_load
 
 
