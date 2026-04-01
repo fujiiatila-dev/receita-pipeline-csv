@@ -36,4 +36,5 @@ RUN pip install --no-cache-dir \
     requests \
     minio \
     dbt-core \
-    dbt-postgres
+    dbt-postgres \
+    clickhouse-connect

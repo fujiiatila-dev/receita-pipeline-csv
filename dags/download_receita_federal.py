@@ -186,5 +186,32 @@ with DAG(
             bash_command=process_cmd
         )
         
-        # Link: Get Date -> Downloads -> Process
-        task_date >> download_tasks >> task_process
+        # Ingestao no ClickHouse (graceful - nao falha se sem credenciais)
+        load_cmd = f"""
+        python /opt/airflow/scripts/load_to_clickhouse.py \
+        "{{{{ ti.xcom_pull(task_ids='get_latest_date') }}}}" \
+        "{type_name}"
+        """
+
+        task_load = BashOperator(
+            task_id=f"load_{type_name}",
+            bash_command=load_cmd
+        )
+
+        # Link: Get Date -> Downloads -> Process -> Load
+        task_date >> download_tasks >> task_process >> task_load
+
+    # Transformacao final (roda apos todas as ingestoes)
+    all_load_tasks = [t for t in dag.tasks if t.task_id.startswith("load_")]
+
+    transform_cmd = """
+    python /opt/airflow/scripts/transform_receita.py \
+    "$(echo '{{ ti.xcom_pull(task_ids="get_latest_date") }}' | tr -d '-')"
+    """
+
+    task_transform = BashOperator(
+        task_id="transform_final",
+        bash_command=transform_cmd
+    )
+
+    all_load_tasks >> task_transform

@@ -20,6 +20,14 @@ x-airflow-common:
     MINIO_ACCESS_KEY: minioadmin
     MINIO_SECRET_KEY: minioadmin
     
+    # ClickHouse (opcional)
+    CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:-}
+    CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8443}
+    CLICKHOUSE_USER: ${CLICKHOUSE_USER:-}
+    CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+    CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-empresas_ativas_do_brasil}
+    CLICKHOUSE_SECURE: ${CLICKHOUSE_SECURE:-true}
+
     # Spark
     JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
     SPARK_HOME: /opt/airflow/spark
