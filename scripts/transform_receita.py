@@ -192,13 +192,31 @@ def _get_ddl():
 
 
 def _create_socios_pivot(client, periodo):
-    """Cria tabela de socios pivoteada (top 3 por empresa)."""
+    """Cria tabela de socios pivoteada (top 3 por empresa, ordenados por antiguidade)."""
     soc = f"{DATABASE}.socios_{periodo}"
     pivot = f"{DATABASE}.socios_{periodo}_pivot"
+    ranked = f"{DATABASE}.socios_{periodo}_ranked"
 
     print(f"[Transform] Criando pivot de socios: {pivot}")
-    client.command(f"DROP TABLE IF EXISTS {pivot}")
 
+    # 1. Criar tabela ranqueada (row_number por cnpj_basico, ordenado por data ASC + nome ASC)
+    client.command(f"DROP TABLE IF EXISTS {ranked}")
+    client.command(f"""
+    CREATE TABLE {ranked}
+    ENGINE = MergeTree
+    ORDER BY (cnpj_basico, rn)
+    AS
+    SELECT *,
+        row_number() OVER (
+            PARTITION BY cnpj_basico
+            ORDER BY data_entrada_sociedade ASC, nome_socio_razao_social ASC
+        ) AS rn
+    FROM {soc}
+    """)
+    print("[Transform] Tabela ranqueada criada")
+
+    # 2. Criar pivot a partir dos top 3
+    client.command(f"DROP TABLE IF EXISTS {pivot}")
     sql = f"""
     CREATE TABLE {pivot}
     ENGINE = MergeTree
@@ -230,12 +248,17 @@ def _create_socios_pivot(client, periodo):
         groupArray(faixa_etaria)[3] AS faixa_etaria_3,
         groupArray(nome_representante)[3] AS nome_representante_3,
         groupArray(qualificacao_representante_legal)[3] AS qualificacao_representante_3
-    FROM {soc}
+    FROM {ranked}
+    WHERE rn <= 3
     GROUP BY cnpj_basico
     """
     client.command(sql)
+
+    # Limpar tabela intermediaria
+    client.command(f"DROP TABLE IF EXISTS {ranked}")
+
     count = client.query(f"SELECT count() FROM {pivot}").result_rows[0][0]
-    print(f"[Transform] Pivot criado: {count:,} empresas com socios")
+    print(f"[Transform] Pivot criado: {count:,} empresas com socios (top 3 por antiguidade)")
 
 
 def _get_select_sql(periodo, uf_filter=None):
@@ -271,11 +294,11 @@ def _get_select_sql(periodo, uf_filter=None):
             e.situacao_cadastral = '08', 'Baixada',
             ''
         ) AS desc_situacao_cadastral,
-        parseDateTimeBestEffortOrNull(e.data_situacao_cadastral) AS data_situacao_cadastral,
+        parseDateTimeBestEffortOrNull(nullIf(e.data_situacao_cadastral, '')) AS data_situacao_cadastral,
         e.motivo_situacao_cadastral,
         e.nome_cidade_exterior AS cidade_exterior,
         e.pais,
-        parseDateTimeBestEffortOrNull(e.data_inicio_atividade) AS data_inicio_atividade,
+        parseDateTimeBestEffortOrNull(nullIf(e.data_inicio_atividade, '')) AS data_inicio_atividade,
         e.cnae_fiscal_principal AS cnae_principal,
         dc.descricao_cnae AS desc_cnae_principal,
         e.cnae_fiscal_secundaria AS cnae_secundario,
@@ -296,7 +319,7 @@ def _get_select_sql(periodo, uf_filter=None):
         e.fax,
         e.correio_eletronico AS email,
         e.situacao_especial,
-        parseDateTimeBestEffortOrNull(e.data_situacao_especial) AS data_situacao_especial,
+        parseDateTimeBestEffortOrNull(nullIf(e.data_situacao_especial, '')) AS data_situacao_especial,
 
         CAST(NULL AS Nullable(Float32)) AS latitude,
         CAST(NULL AS Nullable(Float32)) AS longitude,
@@ -306,7 +329,7 @@ def _get_select_sql(periodo, uf_filter=None):
         dn.descricao_natureza_juridica AS desc_natureza_juridica,
         emp.qualificacao_responsavel,
         dq.descricao_qualificacao_socio AS desc_qualificacao_responsavel,
-        toDecimal64OrNull(emp.capital_social, 2) AS capital_social,
+        CAST(nullIf(replaceAll(emp.capital_social, ',', '.'), '') AS Nullable(Decimal(18, 2))) AS capital_social,
         emp.porte_empresa AS porte,
         multiIf(
             emp.porte_empresa = '00', 'Nao informado',
@@ -324,7 +347,7 @@ def _get_select_sql(periodo, uf_filter=None):
         multiIf(sp.identificador_socio_1 = '1', 'Pessoa Juridica', sp.identificador_socio_1 = '2', 'Pessoa Fisica', sp.identificador_socio_1 = '3', 'Estrangeiro', '') AS desc_identificador_socio_1,
         ifNull(sp.qualificacao_socio_1, '') AS qualificacao_socio_1,
         dqs1.descricao_qualificacao_socio AS desc_qualificacao_socio_1,
-        parseDateTimeBestEffortOrNull(sp.data_entrada_sociedade_1) AS data_entrada_sociedade_1,
+        parseDateTimeBestEffortOrNull(nullIf(sp.data_entrada_sociedade_1, '')) AS data_entrada_sociedade_1,
         ifNull(sp.faixa_etaria_1, '') AS faixa_etaria_1,
         dfe1.descricao AS desc_faixa_etaria_1,
         ifNull(sp.nome_representante_1, '') AS nome_representante_1,
@@ -337,7 +360,7 @@ def _get_select_sql(periodo, uf_filter=None):
         multiIf(sp.identificador_socio_2 = '1', 'Pessoa Juridica', sp.identificador_socio_2 = '2', 'Pessoa Fisica', sp.identificador_socio_2 = '3', 'Estrangeiro', '') AS desc_identificador_socio_2,
         ifNull(sp.qualificacao_socio_2, '') AS qualificacao_socio_2,
         dqs2.descricao_qualificacao_socio AS desc_qualificacao_socio_2,
-        parseDateTimeBestEffortOrNull(sp.data_entrada_sociedade_2) AS data_entrada_sociedade_2,
+        parseDateTimeBestEffortOrNull(nullIf(sp.data_entrada_sociedade_2, '')) AS data_entrada_sociedade_2,
         ifNull(sp.faixa_etaria_2, '') AS faixa_etaria_2,
         dfe2.descricao AS desc_faixa_etaria_2,
         ifNull(sp.nome_representante_2, '') AS nome_representante_2,
@@ -350,7 +373,7 @@ def _get_select_sql(periodo, uf_filter=None):
         multiIf(sp.identificador_socio_3 = '1', 'Pessoa Juridica', sp.identificador_socio_3 = '2', 'Pessoa Fisica', sp.identificador_socio_3 = '3', 'Estrangeiro', '') AS desc_identificador_socio_3,
         ifNull(sp.qualificacao_socio_3, '') AS qualificacao_socio_3,
         dqs3.descricao_qualificacao_socio AS desc_qualificacao_socio_3,
-        parseDateTimeBestEffortOrNull(sp.data_entrada_sociedade_3) AS data_entrada_sociedade_3,
+        parseDateTimeBestEffortOrNull(nullIf(sp.data_entrada_sociedade_3, '')) AS data_entrada_sociedade_3,
         ifNull(sp.faixa_etaria_3, '') AS faixa_etaria_3,
         dfe3.descricao AS desc_faixa_etaria_3,
         ifNull(sp.nome_representante_3, '') AS nome_representante_3,
@@ -359,36 +382,41 @@ def _get_select_sql(periodo, uf_filter=None):
 
         -- Simples / MEI
         ifNull(simp.opcao_simples, '') AS opcao_simples,
-        parseDateTimeBestEffortOrNull(simp.data_opcao_simples) AS data_opcao_simples,
-        parseDateTimeBestEffortOrNull(simp.data_exclusao_simples) AS data_exclusao_simples,
+        parseDateTimeBestEffortOrNull(nullIf(simp.data_opcao_simples, '')) AS data_opcao_simples,
+        parseDateTimeBestEffortOrNull(nullIf(simp.data_exclusao_simples, '')) AS data_exclusao_simples,
         ifNull(simp.opcao_mei, '') AS opcao_mei,
-        parseDateTimeBestEffortOrNull(simp.data_opcao_mei) AS data_opcao_mei,
-        parseDateTimeBestEffortOrNull(simp.data_exclusao_mei) AS data_exclusao_mei,
+        parseDateTimeBestEffortOrNull(nullIf(simp.data_opcao_mei, '')) AS data_opcao_mei,
+        parseDateTimeBestEffortOrNull(nullIf(simp.data_exclusao_mei, '')) AS data_exclusao_mei,
         multiIf(
-            (parseDateTimeBestEffortOrNull(simp.data_exclusao_mei) IS NOT NULL)
-                AND (parseDateTimeBestEffortOrNull(simp.data_exclusao_simples) IS NOT NULL), '',
-            (simp.opcao_mei = 'S') AND (simp.opcao_simples = 'S'),
-                multiIf(
-                    parseDateTimeBestEffortOrNull(simp.data_exclusao_mei) IS NOT NULL, 'Simples',
-                    parseDateTimeBestEffortOrNull(simp.data_exclusao_simples) IS NOT NULL, 'MEI',
-                    'MEI'
-                ),
             simp.opcao_mei = 'S', 'MEI',
-            simp.opcao_simples = 'S', 'Simples',
-            ''
+            simp.opcao_simples = 'S', 'SIMPLES',
+            'OUTROS'
         ) AS tipo_simples_mei,
 
-        -- Porte empresa (de empresa_faixas_opt)
-        ifNull(pe.porte_empresa, '') AS porte_empresa,
+        -- Porte empresa corrigido (MEI sobrescreve)
+        ifNull(pe.porte_empresa, emp.porte_empresa) AS porte_empresa,
         multiIf(
-            pe.porte_empresa = '00', 'Nao se aplica',
-            pe.porte_empresa = '01', 'ME - Microempresa',
-            pe.porte_empresa = '03', 'EPP - Empresa de Pequeno Porte',
-            pe.porte_empresa = '05', 'Demais (Medio/Grande Porte)',
+            simp.opcao_mei = 'S', 'MICRO EMPRESA',
+            emp.porte_empresa = '00', 'Nao se aplica',
+            emp.porte_empresa = '01', 'ME - Microempresa',
+            emp.porte_empresa = '03', 'EPP - Empresa de Pequeno Porte',
+            emp.porte_empresa = '05', 'Demais (Medio/Grande Porte)',
             ''
         ) AS desc_porteempresa_corrigido,
-        ifNull(pe.faixa_faturamento_anual, '') AS faixa_faturamento_anual_ajustada,
-        ifNull(pe.faixa_idade_empresa, '') AS faixa_idade_empresa,
+        multiIf(
+            simp.opcao_mei = 'S', 'ATE R$ 81.000',
+            emp.porte_empresa = '01', 'ATE R$ 360.000',
+            emp.porte_empresa = '03', 'R$ 360.000 A R$ 4.800.000',
+            emp.porte_empresa = '05', 'ACIMA DE R$ 4.800.000',
+            ''
+        ) AS faixa_faturamento_anual_ajustada,
+        multiIf(
+            dateDiff('year', parseDateTimeBestEffortOrNull(nullIf(e.data_inicio_atividade, '')), now()) <= 2, '0-2 ANOS',
+            dateDiff('year', parseDateTimeBestEffortOrNull(nullIf(e.data_inicio_atividade, '')), now()) <= 5, '2-5 ANOS',
+            dateDiff('year', parseDateTimeBestEffortOrNull(nullIf(e.data_inicio_atividade, '')), now()) <= 10, '5-10 ANOS',
+            parseDateTimeBestEffortOrNull(nullIf(e.data_inicio_atividade, '')) IS NOT NULL, 'ACIMA DE 10 ANOS',
+            ''
+        ) AS faixa_idade_empresa,
 
         -- Regiao geografica
         multiIf(
@@ -474,27 +502,28 @@ def _get_select_sql(periodo, uf_filter=None):
         toUInt64(rowNumberInAllBlocks() + 1) AS linha_unica
 
     FROM {estab} e
-    LEFT JOIN {emp} emp ON e.cnpj_basico = emp.cnpj_basico
-    LEFT JOIN {pivot} sp ON e.cnpj_basico = sp.cnpj_basico
-    LEFT JOIN {simp} simp ON e.cnpj_basico = simp.cnpj_basico
-    LEFT JOIN {DATABASE}.empresa_faixas_opt pe ON e.cnpj_basico = pe.cnpj_basico
-    LEFT JOIN {DATABASE}.linkedin_completo_opt lk ON concat(e.cnpj_basico, e.cnpj_ordem, e.cnpj_dv) = lk.cnpj
-    LEFT JOIN {DATABASE}.pessoas_linkedin pl ON concat(e.cnpj_basico, e.cnpj_ordem, e.cnpj_dv) = pl.cnpj
-    LEFT JOIN {DATABASE}.linkedin_completo_opt lc ON concat(e.cnpj_basico, e.cnpj_ordem, e.cnpj_dv) = lc.cnpj
-    LEFT JOIN {DATABASE}.dict_cnae dc ON e.cnae_fiscal_principal = dc.codigo_cnae
-    LEFT JOIN {DATABASE}.dict_municipios dm ON e.municipio = dm.codigo_municipios
-    LEFT JOIN {DATABASE}.dict_naturezas dn ON emp.natureza_juridica = dn.codigo_natureza_juridica
-    LEFT JOIN {DATABASE}.dict_qualificacoes dq ON emp.qualificacao_responsavel = dq.codigo_qualificacao_socio
-    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqs1 ON sp.qualificacao_socio_1 = dqs1.codigo_qualificacao_socio
-    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqs2 ON sp.qualificacao_socio_2 = dqs2.codigo_qualificacao_socio
-    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqs3 ON sp.qualificacao_socio_3 = dqs3.codigo_qualificacao_socio
-    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqr1 ON sp.qualificacao_representante_1 = dqr1.codigo_qualificacao_socio
-    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqr2 ON sp.qualificacao_representante_2 = dqr2.codigo_qualificacao_socio
-    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqr3 ON sp.qualificacao_representante_3 = dqr3.codigo_qualificacao_socio
-    LEFT JOIN {DATABASE}.dict_faixa_etaria dfe1 ON sp.faixa_etaria_1 = dfe1.codigo
-    LEFT JOIN {DATABASE}.dict_faixa_etaria dfe2 ON sp.faixa_etaria_2 = dfe2.codigo
-    LEFT JOIN {DATABASE}.dict_faixa_etaria dfe3 ON sp.faixa_etaria_3 = dfe3.codigo
+    LEFT JOIN {emp} emp ON trim(e.cnpj_basico) = trim(emp.cnpj_basico)
+    LEFT JOIN {pivot} sp ON trim(e.cnpj_basico) = trim(sp.cnpj_basico)
+    LEFT JOIN {simp} simp ON trim(e.cnpj_basico) = trim(simp.cnpj_basico)
+    LEFT JOIN {DATABASE}.empresa_faixas_opt pe ON trim(e.cnpj_basico) = trim(pe.cnpj_basico)
+    LEFT JOIN {DATABASE}.linkedin_completo_opt lk ON concat(trim(e.cnpj_basico), trim(e.cnpj_ordem), trim(e.cnpj_dv)) = trim(lk.cnpj)
+    LEFT JOIN {DATABASE}.pessoas_linkedin pl ON concat(trim(e.cnpj_basico), trim(e.cnpj_ordem), trim(e.cnpj_dv)) = trim(pl.cnpj)
+    LEFT JOIN {DATABASE}.linkedin_completo_opt lc ON concat(trim(e.cnpj_basico), trim(e.cnpj_ordem), trim(e.cnpj_dv)) = trim(lc.cnpj)
+    LEFT JOIN {DATABASE}.dict_cnae dc ON trim(e.cnae_fiscal_principal) = trim(dc.codigo_cnae)
+    LEFT JOIN {DATABASE}.dict_municipios dm ON trim(e.municipio) = trim(dm.codigo_municipios)
+    LEFT JOIN {DATABASE}.dict_naturezas dn ON trim(emp.natureza_juridica) = trim(dn.codigo_natureza_juridica)
+    LEFT JOIN {DATABASE}.dict_qualificacoes dq ON trim(emp.qualificacao_responsavel) = trim(dq.codigo_qualificacao_socio)
+    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqs1 ON trim(sp.qualificacao_socio_1) = trim(dqs1.codigo_qualificacao_socio)
+    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqs2 ON trim(sp.qualificacao_socio_2) = trim(dqs2.codigo_qualificacao_socio)
+    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqs3 ON trim(sp.qualificacao_socio_3) = trim(dqs3.codigo_qualificacao_socio)
+    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqr1 ON trim(sp.qualificacao_representante_1) = trim(dqr1.codigo_qualificacao_socio)
+    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqr2 ON trim(sp.qualificacao_representante_2) = trim(dqr2.codigo_qualificacao_socio)
+    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqr3 ON trim(sp.qualificacao_representante_3) = trim(dqr3.codigo_qualificacao_socio)
+    LEFT JOIN {DATABASE}.dict_faixa_etaria dfe1 ON trim(sp.faixa_etaria_1) = trim(dfe1.codigo)
+    LEFT JOIN {DATABASE}.dict_faixa_etaria dfe2 ON trim(sp.faixa_etaria_2) = trim(dfe2.codigo)
+    LEFT JOIN {DATABASE}.dict_faixa_etaria dfe3 ON trim(sp.faixa_etaria_3) = trim(dfe3.codigo)
     {where_clause}
+    SETTINGS join_use_nulls = 1
     """
 
 
