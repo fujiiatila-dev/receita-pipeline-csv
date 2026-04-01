@@ -191,12 +191,59 @@ def _get_ddl():
     """
 
 
+def _create_socios_pivot(client, periodo):
+    """Cria tabela de socios pivoteada (top 3 por empresa)."""
+    soc = f"{DATABASE}.socios_{periodo}"
+    pivot = f"{DATABASE}.socios_{periodo}_pivot"
+
+    print(f"[Transform] Criando pivot de socios: {pivot}")
+    client.command(f"DROP TABLE IF EXISTS {pivot}")
+
+    sql = f"""
+    CREATE TABLE {pivot}
+    ENGINE = MergeTree
+    ORDER BY cnpj_basico
+    AS
+    SELECT
+        cnpj_basico,
+        groupArray(nome_socio_razao_social)[1] AS nome_socio_1,
+        groupArray(cpf_cnpj_socio)[1] AS cpf_cnpj_socio_1,
+        groupArray(identificador_socio)[1] AS identificador_socio_1,
+        groupArray(qualificacao_socio)[1] AS qualificacao_socio_1,
+        groupArray(data_entrada_sociedade)[1] AS data_entrada_sociedade_1,
+        groupArray(faixa_etaria)[1] AS faixa_etaria_1,
+        groupArray(nome_representante)[1] AS nome_representante_1,
+        groupArray(qualificacao_representante_legal)[1] AS qualificacao_representante_1,
+        groupArray(nome_socio_razao_social)[2] AS nome_socio_2,
+        groupArray(cpf_cnpj_socio)[2] AS cpf_cnpj_socio_2,
+        groupArray(identificador_socio)[2] AS identificador_socio_2,
+        groupArray(qualificacao_socio)[2] AS qualificacao_socio_2,
+        groupArray(data_entrada_sociedade)[2] AS data_entrada_sociedade_2,
+        groupArray(faixa_etaria)[2] AS faixa_etaria_2,
+        groupArray(nome_representante)[2] AS nome_representante_2,
+        groupArray(qualificacao_representante_legal)[2] AS qualificacao_representante_2,
+        groupArray(nome_socio_razao_social)[3] AS nome_socio_3,
+        groupArray(cpf_cnpj_socio)[3] AS cpf_cnpj_socio_3,
+        groupArray(identificador_socio)[3] AS identificador_socio_3,
+        groupArray(qualificacao_socio)[3] AS qualificacao_socio_3,
+        groupArray(data_entrada_sociedade)[3] AS data_entrada_sociedade_3,
+        groupArray(faixa_etaria)[3] AS faixa_etaria_3,
+        groupArray(nome_representante)[3] AS nome_representante_3,
+        groupArray(qualificacao_representante_legal)[3] AS qualificacao_representante_3
+    FROM {soc}
+    GROUP BY cnpj_basico
+    """
+    client.command(sql)
+    count = client.query(f"SELECT count() FROM {pivot}").result_rows[0][0]
+    print(f"[Transform] Pivot criado: {count:,} empresas com socios")
+
+
 def _get_select_sql(periodo, uf_filter=None):
-    """SELECT baseado na view original vw_empresa_socios_mat_nov."""
+    """SELECT usando tabela pivot pre-criada para socios."""
     estab = f"{DATABASE}.estabelecimentos_{periodo}"
     emp = f"{DATABASE}.empresas_{periodo}"
-    soc = f"{DATABASE}.socios_{periodo}"
     simp = f"{DATABASE}.simples_{periodo}"
+    pivot = f"{DATABASE}.socios_{periodo}_pivot"
 
     where_clause = "WHERE e.situacao_cadastral = '02'"
     if uf_filter is not None:
@@ -251,11 +298,9 @@ def _get_select_sql(periodo, uf_filter=None):
         e.situacao_especial,
         parseDateTimeBestEffortOrNull(e.data_situacao_especial) AS data_situacao_especial,
 
-        -- Latitude/Longitude do geocoding (vem do estabelecimento se existir)
         CAST(NULL AS Nullable(Float32)) AS latitude,
         CAST(NULL AS Nullable(Float32)) AS longitude,
 
-        -- Empresa
         emp.razao_social,
         emp.natureza_juridica,
         dn.descricao_natureza_juridica AS desc_natureza_juridica,
@@ -272,93 +317,78 @@ def _get_select_sql(periodo, uf_filter=None):
         ) AS desc_porte,
         emp.ente_federativo_responsavel,
 
-        -- Socios (pivot inline top 3)
-        groupArray(soc.nome_socio_razao_social)[1] AS nome_socio_1,
-        groupArray(soc.cpf_cnpj_socio)[1] AS cpf_cnpj_socio_1,
-        groupArray(soc.identificador_socio)[1] AS identificador_socio_1,
-        multiIf(
-            groupArray(soc.identificador_socio)[1] = '1', 'Pessoa Juridica',
-            groupArray(soc.identificador_socio)[1] = '2', 'Pessoa Fisica',
-            groupArray(soc.identificador_socio)[1] = '3', 'Estrangeiro',
-            ''
-        ) AS desc_identificador_socio_1,
-        groupArray(soc.qualificacao_socio)[1] AS qualificacao_socio_1,
+        -- Socios (da tabela pivot)
+        ifNull(sp.nome_socio_1, '') AS nome_socio_1,
+        ifNull(sp.cpf_cnpj_socio_1, '') AS cpf_cnpj_socio_1,
+        ifNull(sp.identificador_socio_1, '') AS identificador_socio_1,
+        multiIf(sp.identificador_socio_1 = '1', 'Pessoa Juridica', sp.identificador_socio_1 = '2', 'Pessoa Fisica', sp.identificador_socio_1 = '3', 'Estrangeiro', '') AS desc_identificador_socio_1,
+        ifNull(sp.qualificacao_socio_1, '') AS qualificacao_socio_1,
         dqs1.descricao_qualificacao_socio AS desc_qualificacao_socio_1,
-        parseDateTimeBestEffortOrNull(groupArray(soc.data_entrada_sociedade)[1]) AS data_entrada_sociedade_1,
-        groupArray(soc.faixa_etaria)[1] AS faixa_etaria_1,
+        parseDateTimeBestEffortOrNull(sp.data_entrada_sociedade_1) AS data_entrada_sociedade_1,
+        ifNull(sp.faixa_etaria_1, '') AS faixa_etaria_1,
         dfe1.descricao AS desc_faixa_etaria_1,
-        groupArray(soc.nome_representante)[1] AS nome_representante_1,
-        groupArray(soc.qualificacao_representante_legal)[1] AS qualificacao_representante_1,
+        ifNull(sp.nome_representante_1, '') AS nome_representante_1,
+        ifNull(sp.qualificacao_representante_1, '') AS qualificacao_representante_1,
         dqr1.descricao_qualificacao_socio AS desc_qualificacao_representante_1,
 
-        groupArray(soc.nome_socio_razao_social)[2] AS nome_socio_2,
-        groupArray(soc.cpf_cnpj_socio)[2] AS cpf_cnpj_socio_2,
-        groupArray(soc.identificador_socio)[2] AS identificador_socio_2,
-        multiIf(
-            groupArray(soc.identificador_socio)[2] = '1', 'Pessoa Juridica',
-            groupArray(soc.identificador_socio)[2] = '2', 'Pessoa Fisica',
-            groupArray(soc.identificador_socio)[2] = '3', 'Estrangeiro',
-            ''
-        ) AS desc_identificador_socio_2,
-        groupArray(soc.qualificacao_socio)[2] AS qualificacao_socio_2,
+        ifNull(sp.nome_socio_2, '') AS nome_socio_2,
+        ifNull(sp.cpf_cnpj_socio_2, '') AS cpf_cnpj_socio_2,
+        ifNull(sp.identificador_socio_2, '') AS identificador_socio_2,
+        multiIf(sp.identificador_socio_2 = '1', 'Pessoa Juridica', sp.identificador_socio_2 = '2', 'Pessoa Fisica', sp.identificador_socio_2 = '3', 'Estrangeiro', '') AS desc_identificador_socio_2,
+        ifNull(sp.qualificacao_socio_2, '') AS qualificacao_socio_2,
         dqs2.descricao_qualificacao_socio AS desc_qualificacao_socio_2,
-        parseDateTimeBestEffortOrNull(groupArray(soc.data_entrada_sociedade)[2]) AS data_entrada_sociedade_2,
-        groupArray(soc.faixa_etaria)[2] AS faixa_etaria_2,
+        parseDateTimeBestEffortOrNull(sp.data_entrada_sociedade_2) AS data_entrada_sociedade_2,
+        ifNull(sp.faixa_etaria_2, '') AS faixa_etaria_2,
         dfe2.descricao AS desc_faixa_etaria_2,
-        groupArray(soc.nome_representante)[2] AS nome_representante_2,
-        groupArray(soc.qualificacao_representante_legal)[2] AS qualificacao_representante_2,
+        ifNull(sp.nome_representante_2, '') AS nome_representante_2,
+        ifNull(sp.qualificacao_representante_2, '') AS qualificacao_representante_2,
         dqr2.descricao_qualificacao_socio AS desc_qualificacao_representante_2,
 
-        groupArray(soc.nome_socio_razao_social)[3] AS nome_socio_3,
-        groupArray(soc.cpf_cnpj_socio)[3] AS cpf_cnpj_socio_3,
-        groupArray(soc.identificador_socio)[3] AS identificador_socio_3,
-        multiIf(
-            groupArray(soc.identificador_socio)[3] = '1', 'Pessoa Juridica',
-            groupArray(soc.identificador_socio)[3] = '2', 'Pessoa Fisica',
-            groupArray(soc.identificador_socio)[3] = '3', 'Estrangeiro',
-            ''
-        ) AS desc_identificador_socio_3,
-        groupArray(soc.qualificacao_socio)[3] AS qualificacao_socio_3,
+        ifNull(sp.nome_socio_3, '') AS nome_socio_3,
+        ifNull(sp.cpf_cnpj_socio_3, '') AS cpf_cnpj_socio_3,
+        ifNull(sp.identificador_socio_3, '') AS identificador_socio_3,
+        multiIf(sp.identificador_socio_3 = '1', 'Pessoa Juridica', sp.identificador_socio_3 = '2', 'Pessoa Fisica', sp.identificador_socio_3 = '3', 'Estrangeiro', '') AS desc_identificador_socio_3,
+        ifNull(sp.qualificacao_socio_3, '') AS qualificacao_socio_3,
         dqs3.descricao_qualificacao_socio AS desc_qualificacao_socio_3,
-        parseDateTimeBestEffortOrNull(groupArray(soc.data_entrada_sociedade)[3]) AS data_entrada_sociedade_3,
-        groupArray(soc.faixa_etaria)[3] AS faixa_etaria_3,
+        parseDateTimeBestEffortOrNull(sp.data_entrada_sociedade_3) AS data_entrada_sociedade_3,
+        ifNull(sp.faixa_etaria_3, '') AS faixa_etaria_3,
         dfe3.descricao AS desc_faixa_etaria_3,
-        groupArray(soc.nome_representante)[3] AS nome_representante_3,
-        groupArray(soc.qualificacao_representante_legal)[3] AS qualificacao_representante_3,
+        ifNull(sp.nome_representante_3, '') AS nome_representante_3,
+        ifNull(sp.qualificacao_representante_3, '') AS qualificacao_representante_3,
         dqr3.descricao_qualificacao_socio AS desc_qualificacao_representante_3,
 
         -- Simples / MEI
-        any(simp.opcao_simples) AS opcao_simples,
-        parseDateTimeBestEffortOrNull(any(simp.data_opcao_simples)) AS data_opcao_simples,
-        parseDateTimeBestEffortOrNull(any(simp.data_exclusao_simples)) AS data_exclusao_simples,
-        any(simp.opcao_mei) AS opcao_mei,
-        parseDateTimeBestEffortOrNull(any(simp.data_opcao_mei)) AS data_opcao_mei,
-        parseDateTimeBestEffortOrNull(any(simp.data_exclusao_mei)) AS data_exclusao_mei,
+        ifNull(simp.opcao_simples, '') AS opcao_simples,
+        parseDateTimeBestEffortOrNull(simp.data_opcao_simples) AS data_opcao_simples,
+        parseDateTimeBestEffortOrNull(simp.data_exclusao_simples) AS data_exclusao_simples,
+        ifNull(simp.opcao_mei, '') AS opcao_mei,
+        parseDateTimeBestEffortOrNull(simp.data_opcao_mei) AS data_opcao_mei,
+        parseDateTimeBestEffortOrNull(simp.data_exclusao_mei) AS data_exclusao_mei,
         multiIf(
-            (parseDateTimeBestEffortOrNull(any(simp.data_exclusao_mei)) IS NOT NULL)
-                AND (parseDateTimeBestEffortOrNull(any(simp.data_exclusao_simples)) IS NOT NULL), '',
-            (any(simp.opcao_mei) = 'S') AND (any(simp.opcao_simples) = 'S'),
+            (parseDateTimeBestEffortOrNull(simp.data_exclusao_mei) IS NOT NULL)
+                AND (parseDateTimeBestEffortOrNull(simp.data_exclusao_simples) IS NOT NULL), '',
+            (simp.opcao_mei = 'S') AND (simp.opcao_simples = 'S'),
                 multiIf(
-                    parseDateTimeBestEffortOrNull(any(simp.data_exclusao_mei)) IS NOT NULL, 'Simples',
-                    parseDateTimeBestEffortOrNull(any(simp.data_exclusao_simples)) IS NOT NULL, 'MEI',
+                    parseDateTimeBestEffortOrNull(simp.data_exclusao_mei) IS NOT NULL, 'Simples',
+                    parseDateTimeBestEffortOrNull(simp.data_exclusao_simples) IS NOT NULL, 'MEI',
                     'MEI'
                 ),
-            any(simp.opcao_mei) = 'S', 'MEI',
-            any(simp.opcao_simples) = 'S', 'Simples',
+            simp.opcao_mei = 'S', 'MEI',
+            simp.opcao_simples = 'S', 'Simples',
             ''
         ) AS tipo_simples_mei,
 
         -- Porte empresa (de empresa_faixas_opt)
-        any(pe.porte_empresa) AS porte_empresa,
+        ifNull(pe.porte_empresa, '') AS porte_empresa,
         multiIf(
-            any(pe.porte_empresa) = '00', 'Nao se aplica',
-            any(pe.porte_empresa) = '01', 'ME - Microempresa',
-            any(pe.porte_empresa) = '03', 'EPP - Empresa de Pequeno Porte',
-            any(pe.porte_empresa) = '05', 'Demais (Medio/Grande Porte)',
+            pe.porte_empresa = '00', 'Nao se aplica',
+            pe.porte_empresa = '01', 'ME - Microempresa',
+            pe.porte_empresa = '03', 'EPP - Empresa de Pequeno Porte',
+            pe.porte_empresa = '05', 'Demais (Medio/Grande Porte)',
             ''
         ) AS desc_porteempresa_corrigido,
-        any(pe.faixa_faturamento_anual) AS faixa_faturamento_anual_ajustada,
-        any(pe.faixa_idade_empresa) AS faixa_idade_empresa,
+        ifNull(pe.faixa_faturamento_anual, '') AS faixa_faturamento_anual_ajustada,
+        ifNull(pe.faixa_idade_empresa, '') AS faixa_idade_empresa,
 
         -- Regiao geografica
         multiIf(
@@ -373,79 +403,79 @@ def _get_select_sql(periodo, uf_filter=None):
         CASE WHEN e.uf != '' THEN e.uf ELSE 'nao informado' END AS uf_geo,
 
         -- LinkedIn (linkedin_completo_opt como lk)
-        any(lk.id) AS linkedin_id,
-        any(lk.date_created) AS linkedin_date_created,
-        any(lk.ceo) AS linkedin_ceo,
-        any(lk.comercial) AS linkedin_comercial,
-        any(lk.compras) AS linkedin_compras,
-        any(lk.coordenator) AS linkedin_coordenator,
-        any(lk.diretor) AS linkedin_diretor,
-        any(lk.gerente) AS linkedin_gerente,
-        any(lk.representante) AS linkedin_representante,
-        any(lk.socio) AS linkedin_socio,
-        any(lk.score) AS linkedin_score,
-        any(lk.found_in_title) AS linkedin_found_in_title,
-        any(lk.person_name) AS linkedin_person_name,
-        any(lk.occupation) AS linkedin_occupation,
-        any(lk.company_found) AS linkedin_company_found,
-        any(lk.url) AS linkedin_url,
-        any(lk.company_name) AS linkedin_company_name,
-        any(lk.title) AS linkedin_title,
-        any(lk.description) AS linkedin_description,
-        any(lk.sub_title) AS linkedin_sub_title,
-        any(lk.search_key) AS linkedin_search_key,
-        any(lk.search_url) AS linkedin_search_url,
-        any(lk.page_index) AS linkedin_page_index,
-        ifNull(any(lk.cnpj), '') AS linkedin_cnpj,
-        multiIf(any(lk.url) IS NOT NULL, 1, 0) AS linkedin_is_leader,
-        coalesce(groupArray(lk.id)[1], 0) AS linkedin_id1,
-        coalesce(groupArray(lk.id)[2], 0) AS linkedin_id2,
-        coalesce(groupArray(lk.id)[3], 0) AS linkedin_id3,
-        coalesce(groupArray(lk.score)[1], 0) AS linkedin_score1,
-        coalesce(groupArray(lk.score)[2], 0) AS linkedin_score2,
-        coalesce(groupArray(lk.score)[3], 0) AS linkedin_score3,
-        coalesce(groupArray(lk.person_name)[1], '') AS linkedin_person_name1,
-        coalesce(groupArray(lk.person_name)[2], '') AS linkedin_person_name2,
-        coalesce(groupArray(lk.person_name)[3], '') AS linkedin_person_name3,
-        coalesce(groupArray(lk.occupation)[1], '') AS linkedin_occupation1,
-        coalesce(groupArray(lk.occupation)[2], '') AS linkedin_occupation2,
-        coalesce(groupArray(lk.occupation)[3], '') AS linkedin_occupation3,
-        coalesce(groupArray(lk.company_name)[1], '') AS linkedin_company_name1,
-        coalesce(groupArray(lk.company_name)[2], '') AS linkedin_company_name2,
-        coalesce(groupArray(lk.company_name)[3], '') AS linkedin_company_name3,
-        coalesce(groupArray(lk.url)[1], '') AS linkedin_url1,
-        coalesce(groupArray(lk.url)[2], '') AS linkedin_url2,
-        coalesce(groupArray(lk.url)[3], '') AS linkedin_url3,
+        lk.id AS linkedin_id,
+        lk.date_created AS linkedin_date_created,
+        lk.ceo AS linkedin_ceo,
+        lk.comercial AS linkedin_comercial,
+        lk.compras AS linkedin_compras,
+        lk.coordenator AS linkedin_coordenator,
+        lk.diretor AS linkedin_diretor,
+        lk.gerente AS linkedin_gerente,
+        lk.representante AS linkedin_representante,
+        lk.socio AS linkedin_socio,
+        lk.score AS linkedin_score,
+        lk.found_in_title AS linkedin_found_in_title,
+        lk.person_name AS linkedin_person_name,
+        lk.occupation AS linkedin_occupation,
+        lk.company_found AS linkedin_company_found,
+        lk.url AS linkedin_url,
+        lk.company_name AS linkedin_company_name,
+        lk.title AS linkedin_title,
+        lk.description AS linkedin_description,
+        lk.sub_title AS linkedin_sub_title,
+        lk.search_key AS linkedin_search_key,
+        lk.search_url AS linkedin_search_url,
+        lk.page_index AS linkedin_page_index,
+        ifNull(lk.cnpj, '') AS linkedin_cnpj,
+        multiIf(lk.url IS NOT NULL, 1, 0) AS linkedin_is_leader,
+        lk.id AS linkedin_id1,
+        CAST(NULL AS Nullable(Int64)) AS linkedin_id2,
+        CAST(NULL AS Nullable(Int64)) AS linkedin_id3,
+        lk.score AS linkedin_score1,
+        CAST(NULL AS Nullable(Decimal(38, 19))) AS linkedin_score2,
+        CAST(NULL AS Nullable(Decimal(38, 19))) AS linkedin_score3,
+        lk.person_name AS linkedin_person_name1,
+        CAST(NULL AS Nullable(String)) AS linkedin_person_name2,
+        CAST(NULL AS Nullable(String)) AS linkedin_person_name3,
+        lk.occupation AS linkedin_occupation1,
+        CAST(NULL AS Nullable(String)) AS linkedin_occupation2,
+        CAST(NULL AS Nullable(String)) AS linkedin_occupation3,
+        lk.company_name AS linkedin_company_name1,
+        CAST(NULL AS Nullable(String)) AS linkedin_company_name2,
+        CAST(NULL AS Nullable(String)) AS linkedin_company_name3,
+        lk.url AS linkedin_url1,
+        CAST(NULL AS Nullable(String)) AS linkedin_url2,
+        CAST(NULL AS Nullable(String)) AS linkedin_url3,
 
         -- Link (pessoas_linkedin como pl)
-        any(pl.id) AS link_id,
-        any(pl.date_created) AS link_date_created,
-        any(pl.score) AS link_score,
-        any(pl.found_in_title) AS link_found_in_title,
-        any(pl.person_name) AS link_person_name,
-        any(pl.occupation) AS link_occupation,
-        any(pl.company_found) AS link_company_found,
-        any(pl.url) AS link_url,
-        any(pl.company_name) AS link_company_name,
-        any(pl.title) AS link_title,
-        any(pl.description) AS link_description,
-        any(pl.sub_title) AS link_sub_title,
-        any(pl.search_key) AS link_search_key,
-        any(pl.search_url) AS link_search_url,
-        any(pl.cnpj) AS link_cnpj,
+        pl.id AS link_id,
+        pl.date_created AS link_date_created,
+        pl.score AS link_score,
+        pl.found_in_title AS link_found_in_title,
+        pl.person_name AS link_person_name,
+        pl.occupation AS link_occupation,
+        pl.company_found AS link_company_found,
+        pl.url AS link_url,
+        pl.company_name AS link_company_name,
+        pl.title AS link_title,
+        pl.description AS link_description,
+        pl.sub_title AS link_sub_title,
+        pl.search_key AS link_search_key,
+        pl.search_url AS link_search_url,
+        pl.cnpj AS link_cnpj,
 
         -- LC (linkedin_completo_opt como lc)
-        any(lc.url) AS lc_url,
-        any(lc.company_name) AS lc_company_name,
-        any(lc.cnpj) AS lc_cnpj_linkedin_total,
-        any(lc.person_name) AS lc_person_name,
-        any(lc.occupation) AS lc_occupation,
+        lc.url AS lc_url,
+        lc.company_name AS lc_company_name,
+        lc.cnpj AS lc_cnpj_linkedin_total,
+        lc.person_name AS lc_person_name,
+        lc.occupation AS lc_occupation,
 
         toUInt64(rowNumberInAllBlocks() + 1) AS linha_unica
 
     FROM {estab} e
     LEFT JOIN {emp} emp ON e.cnpj_basico = emp.cnpj_basico
-    LEFT JOIN {soc} soc ON e.cnpj_basico = soc.cnpj_basico
+    LEFT JOIN {pivot} sp ON e.cnpj_basico = sp.cnpj_basico
     LEFT JOIN {simp} simp ON e.cnpj_basico = simp.cnpj_basico
     LEFT JOIN {DATABASE}.empresa_faixas_opt pe ON e.cnpj_basico = pe.cnpj_basico
     LEFT JOIN {DATABASE}.linkedin_completo_opt lk ON concat(e.cnpj_basico, e.cnpj_ordem, e.cnpj_dv) = lk.cnpj
@@ -455,40 +485,24 @@ def _get_select_sql(periodo, uf_filter=None):
     LEFT JOIN {DATABASE}.dict_municipios dm ON e.municipio = dm.codigo_municipios
     LEFT JOIN {DATABASE}.dict_naturezas dn ON emp.natureza_juridica = dn.codigo_natureza_juridica
     LEFT JOIN {DATABASE}.dict_qualificacoes dq ON emp.qualificacao_responsavel = dq.codigo_qualificacao_socio
-    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqs1 ON groupArray(soc.qualificacao_socio)[1] = dqs1.codigo_qualificacao_socio
-    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqs2 ON groupArray(soc.qualificacao_socio)[2] = dqs2.codigo_qualificacao_socio
-    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqs3 ON groupArray(soc.qualificacao_socio)[3] = dqs3.codigo_qualificacao_socio
-    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqr1 ON groupArray(soc.qualificacao_representante_legal)[1] = dqr1.codigo_qualificacao_socio
-    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqr2 ON groupArray(soc.qualificacao_representante_legal)[2] = dqr2.codigo_qualificacao_socio
-    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqr3 ON groupArray(soc.qualificacao_representante_legal)[3] = dqr3.codigo_qualificacao_socio
-    LEFT JOIN {DATABASE}.dict_faixa_etaria dfe1 ON groupArray(soc.faixa_etaria)[1] = dfe1.codigo
-    LEFT JOIN {DATABASE}.dict_faixa_etaria dfe2 ON groupArray(soc.faixa_etaria)[2] = dfe2.codigo
-    LEFT JOIN {DATABASE}.dict_faixa_etaria dfe3 ON groupArray(soc.faixa_etaria)[3] = dfe3.codigo
+    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqs1 ON sp.qualificacao_socio_1 = dqs1.codigo_qualificacao_socio
+    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqs2 ON sp.qualificacao_socio_2 = dqs2.codigo_qualificacao_socio
+    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqs3 ON sp.qualificacao_socio_3 = dqs3.codigo_qualificacao_socio
+    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqr1 ON sp.qualificacao_representante_1 = dqr1.codigo_qualificacao_socio
+    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqr2 ON sp.qualificacao_representante_2 = dqr2.codigo_qualificacao_socio
+    LEFT JOIN {DATABASE}.dict_qualificacao_socio dqr3 ON sp.qualificacao_representante_3 = dqr3.codigo_qualificacao_socio
+    LEFT JOIN {DATABASE}.dict_faixa_etaria dfe1 ON sp.faixa_etaria_1 = dfe1.codigo
+    LEFT JOIN {DATABASE}.dict_faixa_etaria dfe2 ON sp.faixa_etaria_2 = dfe2.codigo
+    LEFT JOIN {DATABASE}.dict_faixa_etaria dfe3 ON sp.faixa_etaria_3 = dfe3.codigo
     {where_clause}
-    GROUP BY
-        e.cnpj_basico, e.cnpj_ordem, e.cnpj_dv,
-        e.identificador_matriz_filial, e.nome_fantasia,
-        e.situacao_cadastral, e.data_situacao_cadastral,
-        e.motivo_situacao_cadastral, e.nome_cidade_exterior, e.pais,
-        e.data_inicio_atividade, e.cnae_fiscal_principal, e.cnae_fiscal_secundaria,
-        e.tipo_logradouro, e.logradouro, e.numero, e.complemento, e.bairro,
-        e.cep, e.uf, e.municipio,
-        e.ddd_1, e.telefone_1, e.ddd_2, e.telefone_2, e.ddd_fax, e.fax,
-        e.correio_eletronico, e.situacao_especial, e.data_situacao_especial,
-        emp.razao_social, emp.natureza_juridica, emp.qualificacao_responsavel,
-        emp.capital_social, emp.porte_empresa, emp.ente_federativo_responsavel,
-        dc.descricao_cnae, dm.descricao_municipios,
-        dn.descricao_natureza_juridica, dq.descricao_qualificacao_socio,
-        dqs1.descricao_qualificacao_socio, dqs2.descricao_qualificacao_socio,
-        dqs3.descricao_qualificacao_socio,
-        dqr1.descricao_qualificacao_socio, dqr2.descricao_qualificacao_socio,
-        dqr3.descricao_qualificacao_socio,
-        dfe1.descricao, dfe2.descricao, dfe3.descricao
     """
 
 
 def create_final_table(client, periodo):
     """Cria a tabela final com INSERT por UF para evitar limite de particoes."""
+
+    # Criar pivot de socios primeiro
+    _create_socios_pivot(client, periodo)
 
     # Backup da tabela existente
     backup_table = f"{FINAL_TABLE}_{periodo}_bkp"
