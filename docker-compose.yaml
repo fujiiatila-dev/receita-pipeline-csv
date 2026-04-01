@@ -24,7 +24,7 @@ x-airflow-common:
     CLICKHOUSE_USER: ${CLICKHOUSE_USER:-}
     CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
     CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-empresas_ativas_do_brasil}
-    CLICKHOUSE_SECURE: ${CLICKHOUSE_SECURE:-true}
+    CLICKHOUSE_SECURE: ${CLICKHOUSE_SECURE:-false}
 
     # Spark
     JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64

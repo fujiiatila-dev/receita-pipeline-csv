@@ -9,13 +9,13 @@ def get_clickhouse_client():
     host = os.environ.get("CLICKHOUSE_HOST")
     port = os.environ.get("CLICKHOUSE_PORT", "8443")
     user = os.environ.get("CLICKHOUSE_USER")
-    password = os.environ.get("CLICKHOUSE_PASSWORD")
+    password = os.environ.get("CLICKHOUSE_PASSWORD", "")
     database = os.environ.get("CLICKHOUSE_DATABASE", "empresas_ativas_do_brasil")
     secure = os.environ.get("CLICKHOUSE_SECURE", "true").lower() == "true"
 
-    if not host or not user or not password:
+    if not host or not user:
         print(
-            "[ClickHouse] Credenciais nao configuradas. "
+            "[ClickHouse] Credenciais nao configuradas (CLICKHOUSE_HOST e CLICKHOUSE_USER obrigatorios). "
             "Pulando etapas de banco."
         )
         return None

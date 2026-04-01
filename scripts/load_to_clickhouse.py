@@ -1,11 +1,13 @@
 """
 Ingestao dos CSVs processados no ClickHouse como tabelas staging.
+Aplica saneamento: limpeza de aspas, trim de chaves, ORDER BY cnpj_basico.
 Uso: python load_to_clickhouse.py <mes_ano> <tipo>
   ex: python load_to_clickhouse.py 2026-03 Empresas
 """
 import sys
 import os
 import csv
+import re
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from db_clickhouse import get_clickhouse_client
@@ -40,12 +42,57 @@ SCHEMAS = {
     ],
 }
 
+# Chaves de join que precisam de trim rigoroso
+JOIN_KEYS = {"cnpj_basico", "cnpj_ordem", "cnpj_dv"}
+
+# Campos de razao social que precisam de limpeza de CPF/CNPJ
+RAZAO_SOCIAL_FIELDS = {"razao_social", "nome_socio_razao_social"}
+
+# Campos de data que devem tratar '00000000' e '' como vazio
+DATE_FIELDS = {
+    "data_situacao_cadastral", "data_inicio_atividade", "data_situacao_especial",
+    "data_entrada_sociedade", "data_opcao_simples", "data_exclusao_simples",
+    "data_opcao_mei", "data_exclusao_mei",
+}
+
+# Regex para limpar CPF/CNPJ do final da razao social
+REGEX_DOC_CLEANUP = re.compile(r'[\d./-]+\s*$')
+
 BASE_DIR = "/opt/airflow/data"
 DATABASE = "empresas_ativas_do_brasil"
 
 
+def _clean_field(value, col_name):
+    """Aplica saneamento por campo."""
+    # 1. Remover aspas duplas e barras invertidas excedentes
+    value = value.replace('"', '').replace('\\', '').strip()
+
+    # 2. Trim rigoroso em chaves de join
+    if col_name in JOIN_KEYS:
+        value = value.strip()
+
+    # 3. Limpeza de razao social: remover CPF/CNPJ concatenado
+    if col_name in RAZAO_SOCIAL_FIELDS and value:
+        value = REGEX_DOC_CLEANUP.sub('', value).strip()
+
+    # 4. Tratar datas invalidas ('00000000', '', '0') como vazio
+    if col_name in DATE_FIELDS:
+        if value in ('', '00000000', '0'):
+            value = ''
+
+    # 5. Capital social: substituir virgula por ponto
+    if col_name == 'capital_social':
+        value = value.replace(',', '.')
+
+    # 6. CNAE: garantir apenas numeros
+    if col_name in ('cnae_fiscal_principal', 'cnae_fiscal_secundaria') and value:
+        value = re.sub(r'[^0-9,]', '', value)
+
+    return value
+
+
 def load_csv_to_clickhouse(mes_ano, type_name):
-    """Carrega o CSV processado no ClickHouse."""
+    """Carrega o CSV processado no ClickHouse com saneamento."""
     client = get_clickhouse_client()
     if client is None:
         print("[Load] Sem conexao com ClickHouse. Pulando ingestao.")
@@ -67,7 +114,7 @@ def load_csv_to_clickhouse(mes_ano, type_name):
 
     print(f"[Load] Carregando {csv_path} -> {table_name}")
 
-    # Drop e recria tabela
+    # Drop e recria tabela com ORDER BY cnpj_basico (Prioridade 2 - otimizacao)
     client.command(f"DROP TABLE IF EXISTS {table_name}")
 
     cols_sql = ",\n        ".join([f"`{col}` String" for col in columns])
@@ -77,13 +124,13 @@ def load_csv_to_clickhouse(mes_ano, type_name):
         {cols_sql}
     )
     ENGINE = MergeTree
-    ORDER BY tuple()
+    ORDER BY (cnpj_basico)
     SETTINGS index_granularity = 8192
     """
     client.command(ddl)
-    print(f"[Load] Tabela {table_name} criada com {len(columns)} colunas")
+    print(f"[Load] Tabela {table_name} criada (ORDER BY cnpj_basico)")
 
-    # Ler CSV com delimitador ; e inserir em batches
+    # Ler CSV com delimitador ; e inserir em batches com saneamento
     batch_size = 50000
     batch = []
     total = 0
@@ -93,14 +140,14 @@ def load_csv_to_clickhouse(mes_ano, type_name):
         next(reader, None)  # skip header
 
         for row in reader:
-            # Garantir que a linha tem o numero certo de colunas
+            # Garantir numero correto de colunas
             if len(row) < len(columns):
                 row.extend([""] * (len(columns) - len(row)))
             elif len(row) > len(columns):
                 row = row[: len(columns)]
 
-            # Limpar aspas residuais
-            row = [field.replace('"', '').strip() for field in row]
+            # Aplicar saneamento campo a campo
+            row = [_clean_field(row[i], columns[i]) for i in range(len(columns))]
 
             batch.append(row)
             total += 1
@@ -115,22 +162,6 @@ def load_csv_to_clickhouse(mes_ano, type_name):
         client.insert(table_name, batch, column_names=columns)
 
     print(f"[Load] Ingestao concluida: {table_name} ({total} registros)")
-
-    # Limpar arquivos locais apos ingestao bem sucedida
-    try:
-        os.remove(csv_path)
-        print(f"[Load] CSV removido: {csv_path}")
-
-        # Remover CSVs raw do tipo correspondente
-        raw_dir = os.path.join(BASE_DIR, "raw", mes_ano)
-        if os.path.exists(raw_dir):
-            for f in os.listdir(raw_dir):
-                if f.startswith(type_name):
-                    raw_path = os.path.join(raw_dir, f)
-                    os.remove(raw_path)
-                    print(f"[Load] Raw removido: {raw_path}")
-    except OSError as e:
-        print(f"[Load] Aviso ao limpar arquivos: {e}")
 
     return True
 
