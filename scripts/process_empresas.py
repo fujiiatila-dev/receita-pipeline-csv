@@ -33,22 +33,23 @@ try:
         .load(INPUT_PATTERN)
 
     df_final = df.select(
-        col("_c0").alias("cnpj_basico"),
-        regexp_replace(col("_c1"), "\"", "").alias("razao_social"),
-        regexp_replace(col("_c2"), "\"", "").alias("natureza_juridica"),
-        regexp_replace(col("_c3"), "\"", "").alias("qualificacao_responsavel"),
-        regexp_replace(col("_c4"), ",", ".").alias("capital_social"), 
-        regexp_replace(col("_c5"), "\"", "").alias("porte_empresa"),
-        regexp_replace(col("_c6"), "\"", "").alias("ente_federativo_responsavel")
+        regexp_replace(col("_c0"), '"', '').alias("cnpj_basico"),
+        regexp_replace(col("_c1"), '"', '').alias("razao_social"),
+        regexp_replace(col("_c2"), '"', '').alias("natureza_juridica"),
+        regexp_replace(col("_c3"), '"', '').alias("qualificacao_responsavel"),
+        regexp_replace(regexp_replace(col("_c4"), '"', ''), ',', '.').alias("capital_social"),
+        regexp_replace(col("_c5"), '"', '').alias("porte_empresa"),
+        regexp_replace(col("_c6"), '"', '').alias("ente_federativo_responsavel")
     )
 
     print(f"Gerando CSV único em: {TEMP_OUTPUT_DIR}")
-    
+
     # Grava como CSV único (coalesce(1))
     df_final.coalesce(1).write \
         .format("csv") \
         .option("header", "true") \
         .option("delimiter", ";") \
+        .option("quote", "\u0000") \
         .option("encoding", "ISO-8859-1") \
         .mode("overwrite") \
         .save(TEMP_OUTPUT_DIR)
