@@ -86,13 +86,8 @@ def create_final_table(client, periodo):
 
     print("[Transform] Criando tabela final...")
 
-    ddl = f"""
-    CREATE TABLE {FINAL_TABLE}
-    ENGINE = MergeTree
-    PARTITION BY uf
-    ORDER BY (uf, cnpj_basico)
-    SETTINGS index_granularity = 8192
-    AS
+    # Primeiro cria a tabela vazia, depois insere com setting de partições
+    select_sql = f"""
     SELECT
         -- CNPJ completo
         concat(e.cnpj_basico, e.cnpj_ordem, e.cnpj_dv) AS cnpj,
@@ -371,7 +366,26 @@ def create_final_table(client, periodo):
     WHERE e.situacao_cadastral = '02'
     """
 
-    client.command(ddl)
+    # Criar tabela vazia com schema derivado do SELECT (LIMIT 0)
+    create_sql = f"""
+    CREATE TABLE {FINAL_TABLE}
+    ENGINE = MergeTree
+    PARTITION BY uf
+    ORDER BY (uf, cnpj_basico)
+    SETTINGS index_granularity = 8192
+    AS {select_sql}
+    LIMIT 0
+    """
+    client.command(create_sql)
+    print("[Transform] Tabela vazia criada. Inserindo dados...")
+
+    # INSERT com limite de particoes aumentado
+    insert_sql = f"""
+    INSERT INTO {FINAL_TABLE}
+    SETTINGS max_partitions_per_insert_block = 500
+    {select_sql}
+    """
+    client.command(insert_sql)
 
     # Validacao
     result = client.query(f"SELECT count() FROM {FINAL_TABLE}")
