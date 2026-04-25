@@ -27,6 +27,14 @@ x-airflow-common: &airflow-common
     CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-empresas_ativas_do_brasil}
     CLICKHOUSE_SECURE: ${CLICKHOUSE_SECURE:-false}
 
+    # Geocoding (incremental, mes a mes)
+    GEOCODING_PROVIDER: ${GEOCODING_PROVIDER:-off}
+    GEOCODING_BATCH_LIMIT: ${GEOCODING_BATCH_LIMIT:-1000}
+    GEOCODING_NOMINATIM_URL: ${GEOCODING_NOMINATIM_URL:-https://nominatim.openstreetmap.org}
+    GEOCODING_USER_AGENT: ${GEOCODING_USER_AGENT:-receita-pipeline-csv/1.0}
+    GEOCODING_RATE_LIMIT: ${GEOCODING_RATE_LIMIT:-1.1}
+    CLEANUP_GEO_MIN_THRESHOLD: ${CLEANUP_GEO_MIN_THRESHOLD:-10000000}
+
     # Spark
     JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
     SPARK_HOME: /opt/airflow/spark

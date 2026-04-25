@@ -321,8 +321,8 @@ def _get_select_sql(periodo, uf_filter=None):
         e.situacao_especial,
         parseDateTimeBestEffortOrNull(nullIf(e.data_situacao_especial, '')) AS data_situacao_especial,
 
-        CAST(nullIf(trim(BOTH '\\' FROM geo.latitude), '') AS Nullable(Float32)) AS latitude,
-        CAST(nullIf(trim(BOTH '\\' FROM geo.longitude), '') AS Nullable(Float32)) AS longitude,
+        geo.latitude AS latitude,
+        geo.longitude AS longitude,
 
         emp.razao_social,
         emp.natureza_juridica,
@@ -506,7 +506,10 @@ def _get_select_sql(periodo, uf_filter=None):
     LEFT JOIN {pivot} sp ON trim(e.cnpj_basico) = trim(sp.cnpj_basico)
     LEFT JOIN {simp} simp ON trim(e.cnpj_basico) = trim(simp.cnpj_basico)
     LEFT JOIN {DATABASE}.empresa_faixas_opt pe ON trim(e.cnpj_basico) = trim(pe.cnpj_basico)
-    LEFT JOIN {DATABASE}.estabelecimentos_novembro geo ON concat(trim(e.cnpj_basico), trim(e.cnpj_ordem), trim(e.cnpj_dv)) = trim(geo.cnpj)
+    LEFT JOIN (
+        SELECT cnpj, latitude, longitude
+        FROM {DATABASE}.cnpj_geolocalizacao FINAL
+    ) geo ON concat(trim(e.cnpj_basico), trim(e.cnpj_ordem), trim(e.cnpj_dv)) = geo.cnpj
     LEFT JOIN {DATABASE}.linkedin_completo_opt lk ON concat(trim(e.cnpj_basico), trim(e.cnpj_ordem), trim(e.cnpj_dv)) = trim(lk.cnpj)
     LEFT JOIN {DATABASE}.pessoas_linkedin pl ON concat(trim(e.cnpj_basico), trim(e.cnpj_ordem), trim(e.cnpj_dv)) = trim(pl.cnpj)
     LEFT JOIN {DATABASE}.linkedin_completo_opt lc ON concat(trim(e.cnpj_basico), trim(e.cnpj_ordem), trim(e.cnpj_dv)) = trim(lc.cnpj)
