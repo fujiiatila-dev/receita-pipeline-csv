@@ -118,16 +118,77 @@ def _geocode_nominatim(session, base_url, user_agent, address, max_retries=3):
     return None
 
 
-def _flush_batch(client, batch):
-    """Insere o batch acumulado em cnpj_geolocalizacao."""
+def _flush_batch(client_holder, batch, max_retries=3):
+    """Insere o batch acumulado em cnpj_geolocalizacao.
+
+    Em runs longos a conexao com CH pode ficar "zombie" (client recebe
+    200 OK mas request nunca chega ao servidor). Para detectar e
+    recuperar:
+      1. Faz o INSERT
+      2. Conta quantos cnpjs do batch realmente persistiram
+      3. Se < esperado, recria a conexao e retenta
+      4. Se 3 tentativas falharem, dumpa batch em arquivo de fallback
+
+    client_holder: dict {'client': <cliente>} - permite mutar o cliente
+                   compartilhado quando reconectamos.
+    """
     if not batch:
         return 0
-    client.insert(
-        GEO_TABLE,
-        batch,
-        column_names=["cnpj", "latitude", "longitude", "fonte"],
+
+    expected = len(batch)
+    cnpjs = [row[0] for row in batch]
+    cnpjs_quoted = ",".join(f"'{c}'" for c in cnpjs)
+    verify_sql = (
+        f"SELECT count() FROM {GEO_TABLE} "
+        f"WHERE cnpj IN ({cnpjs_quoted}) AND fonte = 'nominatim'"
     )
-    return len(batch)
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            client_holder["client"].insert(
+                GEO_TABLE,
+                batch,
+                column_names=["cnpj", "latitude", "longitude", "fonte"],
+            )
+            actual = client_holder["client"].query(verify_sql).result_rows[0][0]
+
+            if actual >= expected:
+                return expected
+
+            print(
+                f"[Geocoding] FLUSH inconsistente (esperado={expected}, "
+                f"persistido={actual}, tentativa={attempt}/{max_retries}). "
+                f"Reconectando..."
+            )
+            client_holder["client"] = get_clickhouse_client()
+            if client_holder["client"] is None:
+                time.sleep(5)
+                continue
+        except Exception as e:
+            print(
+                f"[Geocoding] FLUSH excecao (tentativa {attempt}/{max_retries}): {e}. "
+                f"Reconectando..."
+            )
+            client_holder["client"] = get_clickhouse_client()
+            time.sleep(5)
+
+    # Falha definitiva: dumpa para arquivo de fallback (recuperacao manual)
+    fallback_path = (
+        f"/opt/airflow/logs/geocoding_failed_batch_"
+        f"{int(time.time())}.csv"
+    )
+    try:
+        with open(fallback_path, "a", encoding="utf-8") as f:
+            for cnpj, lat, lon, fonte in batch:
+                f.write(f"{cnpj},{lat},{lon},{fonte}\n")
+        print(
+            f"[Geocoding] FLUSH ABORTADO apos {max_retries} tentativas. "
+            f"Batch salvo em {fallback_path} para reprocessamento manual."
+        )
+    except Exception as e:
+        print(f"[Geocoding] CRITICO: falha ao salvar fallback: {e}")
+
+    return 0
 
 
 def main():
@@ -229,6 +290,9 @@ def main():
     success = 0
     failure = 0
 
+    # client_holder permite que _flush_batch mute a referencia ao reconectar
+    client_holder = {"client": client}
+
     try:
         for idx, row in enumerate(rows, start=1):
             cnpj = row[0]
@@ -245,7 +309,7 @@ def main():
 
             # Flush periodico para nao perder trabalho em caso de interrupcao
             if len(pending_batch) >= flush_every:
-                inserted = _flush_batch(client, pending_batch)
+                inserted = _flush_batch(client_holder, pending_batch)
                 total_inserted += inserted
                 pending_batch = []
                 print(
@@ -266,7 +330,7 @@ def main():
     finally:
         # Flush final do que sobrou no batch
         if pending_batch:
-            inserted = _flush_batch(client, pending_batch)
+            inserted = _flush_batch(client_holder, pending_batch)
             total_inserted += inserted
             print(f"[Geocoding] FLUSH FINAL: {inserted} inseridos")
 
