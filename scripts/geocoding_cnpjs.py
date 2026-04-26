@@ -23,6 +23,8 @@ Variaveis de ambiente:
                            CNPJs pendentes (WHERE latitude IS NULL). Se setada, ignora
                            SOURCE_TABLE e GEOCODING_DESC_CNAE_LIKE.
                            Ex: 'empresas_ativas_do_brasil.postos_ativos_geolocalizacao'
+  GEOCODING_FLUSH_EVERY    Quantos resolvidos acumular antes de fazer INSERT (padrao: 500).
+                           Reduz perda em caso de interrupcao em runs longos.
 
 Uso: python geocoding_cnpjs.py
 """
@@ -59,24 +61,60 @@ def _build_address(row):
     return ", ".join(parts)
 
 
-def _geocode_nominatim(session, base_url, user_agent, address):
-    """Consulta Nominatim e retorna (lat, lon) ou None."""
-    try:
-        resp = session.get(
-            f"{base_url}/search",
-            params={"q": address, "format": "json", "limit": 1, "countrycodes": "br"},
-            headers={"User-Agent": user_agent},
-            timeout=15,
-        )
-        if resp.status_code != 200:
+def _geocode_nominatim(session, base_url, user_agent, address, max_retries=3):
+    """Consulta Nominatim com retry em falhas transientes (timeout, 503, 502, 429).
+    Retorna (lat, lon) em sucesso, None em endereco nao encontrado, ou
+    levanta excecao apos esgotar retries em falhas de rede.
+    """
+    backoff = 2
+    last_err = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = session.get(
+                f"{base_url}/search",
+                params={"q": address, "format": "json", "limit": 1, "countrycodes": "br"},
+                headers={"User-Agent": user_agent},
+                timeout=15,
+            )
+            # Falhas transientes: retry com backoff
+            if resp.status_code in (429, 502, 503, 504):
+                last_err = f"HTTP {resp.status_code}"
+                if attempt < max_retries:
+                    sleep_s = backoff ** attempt
+                    print(f"[Geocoding] {last_err} (tentativa {attempt}/{max_retries}), aguardando {sleep_s}s")
+                    time.sleep(sleep_s)
+                    continue
+                return None
+            if resp.status_code != 200:
+                # 4xx nao-recuperavel: nao retry
+                return None
+            data = resp.json()
+            if not data:
+                # Endereco nao encontrado, nao e erro - nao retry
+                return None
+            return float(data[0]["lat"]), float(data[0]["lon"])
+        except Exception as e:
+            last_err = str(e)
+            if attempt < max_retries:
+                sleep_s = backoff ** attempt
+                print(f"[Geocoding] Erro de rede '{last_err}' (tentativa {attempt}/{max_retries}), aguardando {sleep_s}s")
+                time.sleep(sleep_s)
+                continue
+            print(f"[Geocoding] Falha definitiva apos {max_retries} tentativas para '{address[:80]}...': {last_err}")
             return None
-        data = resp.json()
-        if not data:
-            return None
-        return float(data[0]["lat"]), float(data[0]["lon"])
-    except Exception as e:
-        print(f"[Geocoding] Erro Nominatim para '{address[:80]}...': {e}")
-        return None
+    return None
+
+
+def _flush_batch(client, batch):
+    """Insere o batch acumulado em cnpj_geolocalizacao."""
+    if not batch:
+        return 0
+    client.insert(
+        GEO_TABLE,
+        batch,
+        column_names=["cnpj", "latitude", "longitude", "fonte"],
+    )
+    return len(batch)
 
 
 def main():
@@ -170,45 +208,59 @@ def main():
         print("[Geocoding] Nada a fazer.")
         return True
 
-    # 2. Geocodar com rate limit
+    # 2. Geocodar com rate limit + mini-batches (a cada N resolvidos, faz INSERT)
+    flush_every = int(os.environ.get("GEOCODING_FLUSH_EVERY", "500"))
     session = requests.Session()
-    resolved = []
+    pending_batch = []
+    total_inserted = 0
     success = 0
     failure = 0
 
-    for idx, row in enumerate(rows, start=1):
-        cnpj = row[0]
-        address_row = row[1:]
-        address = _build_address(address_row)
+    try:
+        for idx, row in enumerate(rows, start=1):
+            cnpj = row[0]
+            address_row = row[1:]
+            address = _build_address(address_row)
 
-        coords = _geocode_nominatim(session, base_url, user_agent, address)
-        if coords:
-            lat, lon = coords
-            resolved.append((cnpj, lat, lon, "nominatim"))
-            success += 1
-        else:
-            failure += 1
+            coords = _geocode_nominatim(session, base_url, user_agent, address)
+            if coords:
+                lat, lon = coords
+                pending_batch.append((cnpj, lat, lon, "nominatim"))
+                success += 1
+            else:
+                failure += 1
 
-        if idx % 100 == 0:
-            print(
-                f"[Geocoding] Progresso: {idx}/{total_pending} "
-                f"(ok={success}, falha={failure})"
-            )
+            # Flush periodico para nao perder trabalho em caso de interrupcao
+            if len(pending_batch) >= flush_every:
+                inserted = _flush_batch(client, pending_batch)
+                total_inserted += inserted
+                pending_batch = []
+                print(
+                    f"[Geocoding] FLUSH: {inserted} inseridos | "
+                    f"acumulado={total_inserted} | progresso={idx}/{total_pending} "
+                    f"(ok={success}, falha={failure})"
+                )
 
-        time.sleep(rate_limit)
+            elif idx % 100 == 0:
+                print(
+                    f"[Geocoding] Progresso: {idx}/{total_pending} "
+                    f"(ok={success}, falha={failure}, inseridos={total_inserted})"
+                )
 
-    # 3. Inserir resolvidos em batch
-    if resolved:
-        print(f"[Geocoding] Inserindo {len(resolved)} novos pontos em {GEO_TABLE}...")
-        client.insert(
-            GEO_TABLE,
-            resolved,
-            column_names=["cnpj", "latitude", "longitude", "fonte"],
-        )
+            time.sleep(rate_limit)
+    except KeyboardInterrupt:
+        print("[Geocoding] Interrompido pelo usuario. Salvando o que ja foi resolvido...")
+    finally:
+        # Flush final do que sobrou no batch
+        if pending_batch:
+            inserted = _flush_batch(client, pending_batch)
+            total_inserted += inserted
+            print(f"[Geocoding] FLUSH FINAL: {inserted} inseridos")
 
     print(
-        f"[Geocoding] Concluido: {success} resolvidos, {failure} falhas "
-        f"(serao retentados no proximo run)"
+        f"[Geocoding] Concluido: {success} resolvidos, {failure} falhas, "
+        f"{total_inserted} inseridos em {GEO_TABLE} "
+        f"(falhas serao retentadas no proximo run)"
     )
     return True
 
