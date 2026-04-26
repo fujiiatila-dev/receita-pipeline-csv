@@ -31,6 +31,19 @@ Uso: python geocoding_cnpjs.py
 import os
 import sys
 import time
+import socket
+
+# Forca IPv4 nas conexoes HTTP. Containers Docker frequentemente nao tem
+# rota IPv6 valida; sem isso, requests para hosts dual-stack como o
+# Nominatim ficam pendurados ate timeout em vez de fallback para IPv4.
+_ORIG_GETADDRINFO = socket.getaddrinfo
+
+
+def _ipv4_only_getaddrinfo(host, port, _family=0, type=0, proto=0, flags=0):
+    return _ORIG_GETADDRINFO(host, port, socket.AF_INET, type, proto, flags)
+
+
+socket.getaddrinfo = _ipv4_only_getaddrinfo
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from db_clickhouse import get_clickhouse_client
