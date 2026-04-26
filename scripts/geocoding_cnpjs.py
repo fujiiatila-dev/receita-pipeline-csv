@@ -16,6 +16,13 @@ Variaveis de ambiente:
   GEOCODING_NOMINATIM_URL  URL da instancia Nominatim (padrao: https://nominatim.openstreetmap.org)
   GEOCODING_USER_AGENT     User-Agent obrigatorio para Nominatim publico
   GEOCODING_RATE_LIMIT     Segundos entre requests (padrao: 1.1 para respeitar ToS publico)
+  GEOCODING_DESC_CNAE_LIKE Filtro ILIKE em desc_cnae_principal (padrao: vazio = todos)
+                           Ex: '%combust%veis%ve%culos%' para priorizar postos de gasolina
+  GEOCODING_PRIORITY_TABLE Tabela curada com schema {cnpj, tipo_logradouro, logradouro,
+                           numero, bairro, desc_municipio, uf, cep, latitude} de onde ler
+                           CNPJs pendentes (WHERE latitude IS NULL). Se setada, ignora
+                           SOURCE_TABLE e GEOCODING_DESC_CNAE_LIKE.
+                           Ex: 'empresas_ativas_do_brasil.postos_ativos_geolocalizacao'
 
 Uso: python geocoding_cnpjs.py
 """
@@ -92,6 +99,8 @@ def main():
         "receita-pipeline-csv/1.0 (data-pipeline)",
     )
     rate_limit = float(os.environ.get("GEOCODING_RATE_LIMIT", "1.1"))
+    desc_cnae_like = os.environ.get("GEOCODING_DESC_CNAE_LIKE", "").strip()
+    priority_table = os.environ.get("GEOCODING_PRIORITY_TABLE", "").strip()
 
     client = get_clickhouse_client()
     if client is None:
@@ -104,26 +113,55 @@ def main():
         print("[Geocoding] requests nao instalado. Pulando.")
         return True
 
-    # 1. Buscar CNPJs pendentes (ativos sem geo registrada)
-    print(f"[Geocoding] Buscando ate {batch_limit} CNPJs pendentes...")
-    query = f"""
-    SELECT
-        m.cnpj,
-        m.tipo_logradouro,
-        m.logradouro,
-        m.numero,
-        m.bairro,
-        ifNull(m.desc_municipio, '') AS municipio,
-        m.uf,
-        m.cep
-    FROM {SOURCE_TABLE} m
-    LEFT JOIN (SELECT cnpj FROM {GEO_TABLE} FINAL) g ON m.cnpj = g.cnpj
-    WHERE g.cnpj IS NULL
-      AND m.desc_situacao_cadastral = 'Ativa'
-      AND m.uf_geo != 'nao informado'
-      AND (m.logradouro != '' OR m.cep != '')
-    LIMIT {batch_limit}
-    """
+    # 1. Buscar CNPJs pendentes
+    if priority_table:
+        # Modo priority table: ler diretamente de uma tabela curada (ex: postos_ativos_geolocalizacao)
+        # A tabela ja contem os enderecos e marca quem nao tem geo via latitude IS NULL
+        print(f"[Geocoding] Modo priority table: {priority_table}")
+        print(f"[Geocoding] Buscando ate {batch_limit} CNPJs pendentes (latitude IS NULL)...")
+        query = f"""
+        SELECT
+            cnpj,
+            tipo_logradouro,
+            logradouro,
+            numero,
+            bairro,
+            ifNull(desc_municipio, '') AS municipio,
+            uf,
+            cep
+        FROM {priority_table}
+        WHERE latitude IS NULL
+          AND (logradouro != '' OR cep != '')
+        LIMIT {batch_limit}
+        """
+    else:
+        # Modo padrao: ler de mt_empresa_socios_enriquecido_nov com filtros de elegibilidade
+        cnae_filter_clause = ""
+        if desc_cnae_like:
+            safe = desc_cnae_like.replace("'", "''")
+            cnae_filter_clause = f"AND m.desc_cnae_principal ILIKE '{safe}'"
+            print(f"[Geocoding] Filtro CNAE ativo: desc_cnae_principal ILIKE '{desc_cnae_like}'")
+
+        print(f"[Geocoding] Buscando ate {batch_limit} CNPJs pendentes...")
+        query = f"""
+        SELECT
+            m.cnpj,
+            m.tipo_logradouro,
+            m.logradouro,
+            m.numero,
+            m.bairro,
+            ifNull(m.desc_municipio, '') AS municipio,
+            m.uf,
+            m.cep
+        FROM {SOURCE_TABLE} m
+        LEFT JOIN (SELECT cnpj FROM {GEO_TABLE} FINAL) g ON m.cnpj = g.cnpj
+        WHERE g.cnpj IS NULL
+          AND m.desc_situacao_cadastral = 'Ativa'
+          AND m.uf_geo != 'nao informado'
+          AND (m.logradouro != '' OR m.cep != '')
+          {cnae_filter_clause}
+        LIMIT {batch_limit}
+        """
     rows = client.query(query).result_rows
     total_pending = len(rows)
     print(f"[Geocoding] {total_pending} CNPJs para processar nesta execucao")
