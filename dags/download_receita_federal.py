@@ -216,21 +216,29 @@ with DAG(
 
     all_load_tasks >> task_transform
 
-    # 4. Geocoding incremental dos CNPJs ativos sem lat/long
+    # 4. Geocoding incremental dos CNPJs ativos sem lat/long (Nominatim, opcional)
     geocoding_cmd = "python /opt/airflow/scripts/geocoding_cnpjs.py"
     task_geocoding = BashOperator(
         task_id="geocoding_cnpjs",
         bash_command=geocoding_cmd
     )
 
-    # 5. Limpeza de CNPJs inativos da tabela auxiliar de geolocalizacao
+    # 5. Fallback IBGE: completa o que sobrar com centroides de municipio
+    # Garante 100% de cobertura mesmo se Nominatim estiver desligado/indisponivel
+    ibge_fallback_cmd = "python /opt/airflow/scripts/geocoding_ibge_fallback.py"
+    task_ibge_fallback = BashOperator(
+        task_id="geocoding_ibge_fallback",
+        bash_command=ibge_fallback_cmd
+    )
+
+    # 6. Limpeza de CNPJs inativos da tabela auxiliar de geolocalizacao
     cleanup_geo_cmd = "python /opt/airflow/scripts/cleanup_cnpj_geolocalizacao.py"
     task_cleanup_geo = BashOperator(
         task_id="cleanup_cnpj_geolocalizacao",
         bash_command=cleanup_geo_cmd
     )
 
-    # 6. Limpeza de arquivos locais (somente apos sucesso de tudo)
+    # 7. Limpeza de arquivos locais (somente apos sucesso de tudo)
     cleanup_cmd = """
     rm -rf /opt/airflow/data/raw/{{ ti.xcom_pull(task_ids='get_latest_date') }}
     rm -f /opt/airflow/data/output/*_{{ ti.xcom_pull(task_ids='get_latest_date') }}.csv
@@ -242,6 +250,7 @@ with DAG(
         trigger_rule="all_success"
     )
 
-    # Ordem: transform -> geocoding -> cleanup_geo -> cleanup_local
-    # Geocoding antes do cleanup_geo: nao apaga CNPJs que estao para ser geocodados
-    task_transform >> task_geocoding >> task_cleanup_geo >> task_cleanup
+    # Ordem: transform -> nominatim -> ibge_fallback -> cleanup_geo -> cleanup_local
+    # Nominatim primeiro (mais preciso), IBGE depois preenche o que sobrou
+    # cleanup_geo so depois das duas fontes para nao apagar CNPJs em transito
+    task_transform >> task_geocoding >> task_ibge_fallback >> task_cleanup_geo >> task_cleanup
