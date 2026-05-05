@@ -1,0 +1,220 @@
+# Docker Compose dedicado ao deploy completo na VPS.
+# Contem: Airflow, Postgres metadata, MinIO dedicado, Nominatim self-hosted, Worker de geocoding.
+# ClickHouse continua sendo o externo (177.67.54.126:8123) - configurado via .env.
+
+x-airflow-common: &airflow-common
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
+
+    # Postgres metadata Airflow (dedicado)
+    PG_HOST: postgres-airflow
+    PG_USER: airflow
+    PG_PASS: airflow
+
+    # MinIO dedicado do receita (novo, separado do MinIO existente da VPS)
+    MINIO_ENDPOINT: http://minio-receita:9000
+    MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+    MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+
+    # ClickHouse externo (mesma fonte de dados de produção)
+    CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:-177.67.54.126}
+    CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8123}
+    CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+    CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+    CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-empresas_ativas_do_brasil}
+    CLICKHOUSE_SECURE: ${CLICKHOUSE_SECURE:-false}
+
+    # Geocoding (DAG mensal usa apenas IBGE fallback aqui; Nominatim fica no worker dedicado)
+    GEOCODING_PROVIDER: ${GEOCODING_PROVIDER:-off}
+    GEOCODING_BATCH_LIMIT: ${GEOCODING_BATCH_LIMIT:-1000}
+    GEOCODING_FLUSH_EVERY: ${GEOCODING_FLUSH_EVERY:-500}
+    CLEANUP_GEO_MIN_THRESHOLD: ${CLEANUP_GEO_MIN_THRESHOLD:-10000000}
+
+    # Spark
+    JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+    SPARK_HOME: /opt/airflow/spark
+  volumes:
+    - ../dags:/opt/airflow/dags
+    - ../scripts:/opt/airflow/scripts
+    - airflow_data:/opt/airflow/data
+    - airflow_logs:/opt/airflow/logs
+    - airflow_plugins:/opt/airflow/plugins
+  user: "${AIRFLOW_UID:-50000}:0"
+
+services:
+  # ----------------- Postgres metadata Airflow -----------------
+  postgres-airflow:
+    image: postgres:13
+    container_name: postgres-airflow
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_airflow_data:/var/lib/postgresql/data
+    networks:
+      - vps-net
+    restart: unless-stopped
+
+  # ----------------- MinIO dedicado do receita (porta 9100/9101 pra evitar conflito com MinIO existente da VPS) -----------------
+  minio-receita:
+    image: minio/minio
+    container_name: minio-receita
+    ports:
+      - "9100:9000"
+      - "9101:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    volumes:
+      - minio_receita_storage:/data
+    networks:
+      - vps-net
+    restart: unless-stopped
+
+  # ----------------- Airflow init (one-shot) -----------------
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create \
+          --username admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com \
+          --password ${AIRFLOW_ADMIN_PASSWORD:-admin}
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+      minio-receita:
+        condition: service_healthy
+    networks:
+      - vps-net
+
+  # ----------------- Airflow webserver (UI em :8080) -----------------
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: airflow webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+      minio-receita:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    networks:
+      - vps-net
+    restart: unless-stopped
+
+  # ----------------- Airflow scheduler -----------------
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: airflow scheduler
+    shm_size: '4gb'
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+      minio-receita:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    networks:
+      - vps-net
+    restart: unless-stopped
+
+  # ----------------- Nominatim self-hosted (porta 8090 pra evitar conflito com Airflow) -----------------
+  nominatim:
+    image: mediagis/nominatim:4.4
+    container_name: nominatim
+    ports:
+      - "8090:8080"
+    environment:
+      PBF_URL: ${NOMINATIM_PBF_URL:-https://download.geofabrik.de/south-america/brazil-latest.osm.pbf}
+      REPLICATION_URL: ${NOMINATIM_REPLICATION_URL:-https://download.geofabrik.de/south-america/brazil-updates/}
+      NOMINATIM_PASSWORD: ${NOMINATIM_PASSWORD:-nominatim}
+      IMPORT_WIKIPEDIA: "false"
+      IMPORT_TIGER_ADDRESSES: "false"
+      THREADS: ${NOMINATIM_IMPORT_THREADS:-4}
+    volumes:
+      - nominatim_data:/var/lib/postgresql/16/main
+      - nominatim_flatnode:/nominatim/flatnode
+    shm_size: '1gb'
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 12h  # Import inicial leva 6-12h, container fica unhealthy ate concluir
+    restart: unless-stopped
+    networks:
+      - vps-net
+
+  # ----------------- Geocoding worker paralelo (consome Nominatim local) -----------------
+  geocoding-worker:
+    build: ./worker
+    container_name: geocoding-worker
+    environment:
+      # ClickHouse externo
+      CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:-177.67.54.126}
+      CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8123}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-empresas_ativas_do_brasil}
+      CLICKHOUSE_SECURE: ${CLICKHOUSE_SECURE:-false}
+      # Nominatim local (Docker network interno)
+      NOMINATIM_URL: http://nominatim:8080
+      WORKER_THREADS: ${WORKER_THREADS:-8}
+      WORKER_BATCH_SIZE: ${WORKER_BATCH_SIZE:-5000}
+      WORKER_FLUSH_EVERY: ${WORKER_FLUSH_EVERY:-1000}
+      WORKER_IDLE_SLEEP: ${WORKER_IDLE_SLEEP:-300}
+      WORKER_REPROCESS_IBGE: ${WORKER_REPROCESS_IBGE:-true}
+    depends_on:
+      nominatim:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - vps-net
+
+volumes:
+  postgres_airflow_data:
+  minio_receita_storage:
+  nominatim_data:
+  nominatim_flatnode:
+  airflow_data:
+  airflow_logs:
+  airflow_plugins:
+
+networks:
+  vps-net:
+    driver: bridge
