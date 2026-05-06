@@ -86,16 +86,15 @@ def get_ch_client():
     )
 
 
-def build_address(row):
-    """Constroi endereco para query no Nominatim."""
-    tipo, log, num, bairro, mun, uf, cep = row
+def build_address(cep, uf, municipio, tipo_logradouro, logradouro, numero, bairro):
+    """Constroi endereco para query no Nominatim a partir dos campos individuais."""
     parts = []
-    if log:
-        loc = f"{tipo} {log}".strip() if tipo else log
-        if num and num not in ("0", "S/N", "SN"):
-            loc = f"{loc}, {num}"
+    if logradouro:
+        loc = f"{tipo_logradouro} {logradouro}".strip() if tipo_logradouro else logradouro
+        if numero and numero not in ("0", "S/N", "SN"):
+            loc = f"{loc}, {numero}"
         parts.append(loc)
-    for p in (bairro, mun, uf, cep):
+    for p in (bairro, municipio, uf, cep):
         if p:
             parts.append(p)
     parts.append("Brasil")
@@ -126,7 +125,12 @@ def geocode(session, address):
 
 
 def fetch_batch(client, batch_size):
-    """Busca CNPJs pendentes (sem geo OU com fonte=ibge_centroide se REPROCESS_IBGE)."""
+    """Busca CNPJs pendentes (sem geo OU com fonte=ibge_centroide se REPROCESS_IBGE).
+
+    NOTA: ClickHouse precisa de SETTINGS join_use_nulls = 1 para que LEFT JOIN
+    sem match retorne NULL (em vez de string vazia, comportamento padrao).
+    Sem isso, 'g.cnpj IS NULL' nao retorna nenhum pendente.
+    """
     fonte_filter = (
         "(g.cnpj IS NULL OR g.fonte = 'ibge_centroide')"
         if REPROCESS_IBGE
@@ -134,18 +138,23 @@ def fetch_batch(client, batch_size):
     )
     query = f"""
         SELECT
-            m.cnpj,
-            m.tipo_logradouro, m.logradouro, m.numero, m.bairro,
+            trim(m.cnpj) AS cnpj,
+            m.cep,
+            m.uf,
             ifNull(m.desc_municipio, '') AS municipio,
-            m.uf, m.cep
+            m.tipo_logradouro,
+            m.logradouro,
+            m.numero,
+            m.bairro
         FROM {SOURCE_TABLE} m
         LEFT JOIN (SELECT cnpj, fonte FROM {GEO_TABLE} FINAL) g
             ON trim(m.cnpj) = g.cnpj
         WHERE {fonte_filter}
           AND m.desc_situacao_cadastral = 'Ativa'
-          AND m.uf_geo != 'nao informado'
           AND (m.logradouro != '' OR m.cep != '')
+        GROUP BY cnpj, cep, uf, municipio, tipo_logradouro, logradouro, numero, bairro
         LIMIT {batch_size}
+        SETTINGS join_use_nulls = 1
     """
     return client.query(query).result_rows
 
@@ -168,7 +177,11 @@ def insert_batch(client_holder, batch, max_retries=3):
             client_holder["client"].insert(
                 GEO_TABLE,
                 batch,
-                column_names=["cnpj", "latitude", "longitude", "fonte"],
+                column_names=[
+                    "cnpj", "cep", "uf", "municipio",
+                    "logradouro", "numero", "bairro",
+                    "latitude", "longitude", "fonte",
+                ],
             )
             actual = client_holder["client"].query(verify_sql).result_rows[0][0]
             if actual >= expected:
@@ -197,8 +210,9 @@ def insert_batch(client_holder, batch, max_retries=3):
     fallback_path = f"/tmp/failed_batch_{int(time.time())}.csv"
     try:
         with open(fallback_path, "a", encoding="utf-8") as f:
-            for cnpj, lat, lon, fonte in batch:
-                f.write(f"{cnpj},{lat},{lon},{fonte}\n")
+            f.write("cnpj,cep,uf,municipio,logradouro,numero,bairro,latitude,longitude,fonte\n")
+            for row in batch:
+                f.write(",".join(str(c).replace(",", " ") for c in row) + "\n")
         print(
             f"[Worker] FLUSH ABORTADO apos {max_retries} tentativas. "
             f"Batch salvo em {fallback_path}",
@@ -211,10 +225,12 @@ def insert_batch(client_holder, batch, max_retries=3):
 
 
 def process_one(session, row):
-    cnpj = row[0]
-    addr = build_address(row[1:])
+    """row: (cnpj, cep, uf, municipio, tipo_logradouro, logradouro, numero, bairro)"""
+    cnpj, cep, uf, municipio, tipo_logradouro, logradouro, numero, bairro = row
+    addr = build_address(cep, uf, municipio, tipo_logradouro, logradouro, numero, bairro)
     coords = geocode(session, addr)
-    return cnpj, coords
+    # Retorna a tupla pronta para INSERT (10 campos, na ordem da tabela)
+    return cnpj, cep, uf, municipio, logradouro, numero, bairro, coords
 
 
 def process_batch_parallel(rows):
@@ -226,13 +242,16 @@ def process_batch_parallel(rows):
         futures = [ex.submit(process_one, session, row) for row in rows]
         for f in as_completed(futures):
             try:
-                cnpj, coords = f.result()
+                cnpj, cep, uf, municipio, logradouro, numero, bairro, coords = f.result()
             except Exception as e:
                 print(f"[Worker] Erro no future: {e}", flush=True)
                 failed += 1
                 continue
             if coords:
-                resolved.append((cnpj, coords[0], coords[1], FONTE))
+                resolved.append((
+                    cnpj, cep, uf, municipio, logradouro, numero, bairro,
+                    coords[0], coords[1], FONTE,
+                ))
             else:
                 failed += 1
     return resolved, failed
