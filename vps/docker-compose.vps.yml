@@ -167,7 +167,11 @@ services:
       IMPORT_TIGER_ADDRESSES: "false"
       THREADS: ${NOMINATIM_IMPORT_THREADS:-4}
     volumes:
-      - nominatim_data:/var/lib/postgresql/16/main
+      # IMPORTANTE: mediagis/nominatim:4.4 usa PostgreSQL 14 internamente.
+      # O path correto e /var/lib/postgresql/14/main. Usar /16/main faz o
+      # volume ficar vazio e os dados irem pro filesystem efemero do container
+      # (perda total ao reiniciar).
+      - nominatim_data:/var/lib/postgresql/14/main
       - nominatim_flatnode:/nominatim/flatnode
     shm_size: '1gb'
     healthcheck:
