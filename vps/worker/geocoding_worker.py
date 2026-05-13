@@ -18,7 +18,10 @@ Variaveis de ambiente:
   WORKER_BATCH_SIZE        CNPJs lidos por iteracao (padrao 5000)
   WORKER_FLUSH_EVERY       Resolvidos antes de INSERT (padrao 1000)
   WORKER_IDLE_SLEEP        Segundos sem pendentes antes de retry (padrao 300)
-  WORKER_REPROCESS_IBGE    true|false: reprocessa entradas ibge_centroide (padrao true)
+  WORKER_REPROCESS_IBGE    true|false: reprocessa entradas ibge_centroide (padrao false).
+                           CUIDADO: true cria loop infinito sobre CNPJs ja em IBGE cuja
+                           cidade nao tem cobertura OSM. Use somente em passada dedicada
+                           de upgrade no final do backlog.
 """
 import os
 import sys
@@ -53,7 +56,7 @@ WORKERS = int(os.environ.get("WORKER_THREADS", "8"))
 BATCH_SIZE = int(os.environ.get("WORKER_BATCH_SIZE", "5000"))
 FLUSH_EVERY = int(os.environ.get("WORKER_FLUSH_EVERY", "1000"))
 IDLE_SLEEP = int(os.environ.get("WORKER_IDLE_SLEEP", "300"))
-REPROCESS_IBGE = os.environ.get("WORKER_REPROCESS_IBGE", "true").lower() == "true"
+REPROCESS_IBGE = os.environ.get("WORKER_REPROCESS_IBGE", "false").lower() == "true"
 
 FONTE_NOMINATIM = "nominatim_local"
 FONTE_IBGE = "ibge_centroide"
@@ -197,7 +200,11 @@ def geocode_with_fallback(session, cep, uf, municipio, tipo_logradouro, logradou
 
 
 def fetch_batch(client, batch_size):
-    """Busca CNPJs pendentes (sem geo OU com fonte=ibge_centroide se REPROCESS_IBGE).
+    """Busca CNPJs UNICOS pendentes (1 row por CNPJ, qualquer estabelecimento).
+
+    Source tem ~4.93 rows por CNPJ (estabelecimentos diferentes). Sem agregar
+    por CNPJ unico, o worker geocoda N enderecos do mesmo CNPJ e a ReplacingMergeTree
+    mantem apenas 1 - desperdicio de ~5x. any() pega 1 endereco arbitrario por CNPJ.
 
     NOTA: SETTINGS join_use_nulls = 1 obrigatorio - sem isso, 'g.cnpj IS NULL'
     nao retorna nada (ClickHouse usa string vazia em LEFT JOIN sem match por padrao).
@@ -210,20 +217,20 @@ def fetch_batch(client, batch_size):
     query = f"""
         SELECT
             trim(m.cnpj) AS cnpj,
-            m.cep,
-            m.uf,
-            ifNull(m.desc_municipio, '') AS municipio,
-            m.tipo_logradouro,
-            m.logradouro,
-            m.numero,
-            m.bairro
+            any(m.cep) AS cep,
+            any(m.uf) AS uf,
+            any(ifNull(m.desc_municipio, '')) AS municipio,
+            any(m.tipo_logradouro) AS tipo_logradouro,
+            any(m.logradouro) AS logradouro,
+            any(m.numero) AS numero,
+            any(m.bairro) AS bairro
         FROM {SOURCE_TABLE} m
         LEFT JOIN (SELECT cnpj, fonte FROM {GEO_TABLE} FINAL) g
             ON trim(m.cnpj) = g.cnpj
         WHERE {fonte_filter}
           AND m.desc_situacao_cadastral = 'Ativa'
           AND (m.logradouro != '' OR m.cep != '' OR m.uf != '')
-        GROUP BY cnpj, cep, uf, municipio, tipo_logradouro, logradouro, numero, bairro
+        GROUP BY trim(m.cnpj)
         LIMIT {batch_size}
         SETTINGS join_use_nulls = 1
     """
