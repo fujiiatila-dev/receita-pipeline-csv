@@ -133,8 +133,8 @@ FILES_GROUP_MAP = {
 
 with DAG(
     dag_id="receita_federal_csv_generator",
-    start_date=pendulum.datetime(2025, 1, 1, tz="UTC"),
-    schedule=None,
+    start_date=pendulum.datetime(2025, 1, 1, tz="America/Sao_Paulo"),
+    schedule="0 8 27 * *",  # mensal, dia 27 as 08:00 (horario de Brasilia)
     catchup=False,
     default_args={'pool': 'spark_pool'}, 
 ) as dag:
