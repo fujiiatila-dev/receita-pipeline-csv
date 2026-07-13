@@ -1,7 +1,11 @@
 """
-Transformacao: cria tabela final mt_empresa_socios_enriquecido_nov.
-Uso: python transform_receita.py <periodo>
-  ex: python transform_receita.py 202603
+Transformacao: cria a tabela final mt_empresa_socios_enriquecido (tabela viva, sem sufixo de mes).
+Ao substituir, a tabela anterior e arquivada com o sufixo do seu ano-mes:
+mt_empresa_socios_enriquecido_<periodo_antigo>.
+Uso: python transform_receita.py <periodo> [periodo_antigo]
+  ex: python transform_receita.py 202603 202602
+    periodo        = ano-mes dos dados novos (tabelas staging *_<periodo>)
+    periodo_antigo = ano-mes da tabela em producao que sera substituida/arquivada (opcional)
 """
 import sys
 import os
@@ -10,7 +14,19 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from db_clickhouse import get_clickhouse_client
 
 DATABASE = "empresas_ativas_do_brasil"
-FINAL_TABLE = f"{DATABASE}.mt_empresa_socios_enriquecido_nov"
+FINAL_TABLE_NAME = "mt_empresa_socios_enriquecido"
+FINAL_TABLE = f"{DATABASE}.{FINAL_TABLE_NAME}"
+
+
+def _archive_table_name(periodo, periodo_antigo):
+    """Nome da tabela arquivada ao substituir a tabela viva.
+
+    Usa o ano-mes da tabela antiga quando informado (arquivo permanente);
+    na ausencia, cai para um backup temporario com o periodo novo.
+    """
+    if periodo_antigo:
+        return f"{FINAL_TABLE}_{periodo_antigo}"
+    return f"{FINAL_TABLE}_{periodo}_bkp"
 
 UFS = [
     'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA',
@@ -119,69 +135,6 @@ def _get_ddl():
         `faixa_idade_empresa` String,
         `regiao_geo` String,
         `uf_geo` String,
-        `linkedin_id` Nullable(Decimal(38, 19)),
-        `linkedin_date_created` Nullable(DateTime64(6)),
-        `linkedin_ceo` Nullable(UInt8),
-        `linkedin_comercial` Nullable(UInt8),
-        `linkedin_compras` Nullable(UInt8),
-        `linkedin_coordenator` Nullable(UInt8),
-        `linkedin_diretor` Nullable(UInt8),
-        `linkedin_gerente` Nullable(UInt8),
-        `linkedin_representante` Nullable(UInt8),
-        `linkedin_socio` Nullable(UInt8),
-        `linkedin_score` Nullable(Decimal(38, 19)),
-        `linkedin_found_in_title` Nullable(UInt8),
-        `linkedin_person_name` Nullable(String),
-        `linkedin_occupation` Nullable(String),
-        `linkedin_company_found` Nullable(String),
-        `linkedin_url` Nullable(String),
-        `linkedin_company_name` Nullable(String),
-        `linkedin_title` Nullable(String),
-        `linkedin_description` Nullable(String),
-        `linkedin_sub_title` Nullable(String),
-        `linkedin_search_key` Nullable(String),
-        `linkedin_search_url` Nullable(String),
-        `linkedin_page_index` Nullable(Int64),
-        `linkedin_cnpj` String,
-        `linkedin_is_leader` Nullable(UInt8),
-        `linkedin_id1` Nullable(Int64),
-        `linkedin_id2` Nullable(Int64),
-        `linkedin_id3` Nullable(Int64),
-        `linkedin_score1` Nullable(Decimal(38, 19)),
-        `linkedin_score2` Nullable(Decimal(38, 19)),
-        `linkedin_score3` Nullable(Decimal(38, 19)),
-        `linkedin_person_name1` Nullable(String),
-        `linkedin_person_name2` Nullable(String),
-        `linkedin_person_name3` Nullable(String),
-        `linkedin_occupation1` Nullable(String),
-        `linkedin_occupation2` Nullable(String),
-        `linkedin_occupation3` Nullable(String),
-        `linkedin_company_name1` Nullable(String),
-        `linkedin_company_name2` Nullable(String),
-        `linkedin_company_name3` Nullable(String),
-        `linkedin_url1` Nullable(String),
-        `linkedin_url2` Nullable(String),
-        `linkedin_url3` Nullable(String),
-        `link_id` Nullable(Int64),
-        `link_date_created` Nullable(DateTime64(6)),
-        `link_score` Nullable(Decimal(38, 19)),
-        `link_found_in_title` Nullable(Int32),
-        `link_person_name` Nullable(String),
-        `link_occupation` Nullable(String),
-        `link_company_found` Nullable(String),
-        `link_url` Nullable(String),
-        `link_company_name` Nullable(String),
-        `link_title` Nullable(String),
-        `link_description` Nullable(String),
-        `link_sub_title` Nullable(String),
-        `link_search_key` Nullable(String),
-        `link_search_url` Nullable(String),
-        `link_cnpj` Nullable(String),
-        `lc_url` Nullable(String),
-        `lc_company_name` Nullable(String),
-        `lc_cnpj_linkedin_total` Nullable(String),
-        `lc_person_name` Nullable(String),
-        `lc_occupation` Nullable(String),
         `linha_unica` UInt64
     )
     ENGINE = MergeTree
@@ -430,75 +383,6 @@ def _get_select_sql(periodo, uf_filter=None):
         ) AS regiao_geo,
         CASE WHEN e.uf != '' THEN e.uf ELSE 'nao informado' END AS uf_geo,
 
-        -- LinkedIn (linkedin_completo_opt como lk)
-        lk.id AS linkedin_id,
-        lk.date_created AS linkedin_date_created,
-        lk.ceo AS linkedin_ceo,
-        lk.comercial AS linkedin_comercial,
-        lk.compras AS linkedin_compras,
-        lk.coordenator AS linkedin_coordenator,
-        lk.diretor AS linkedin_diretor,
-        lk.gerente AS linkedin_gerente,
-        lk.representante AS linkedin_representante,
-        lk.socio AS linkedin_socio,
-        lk.score AS linkedin_score,
-        lk.found_in_title AS linkedin_found_in_title,
-        lk.person_name AS linkedin_person_name,
-        lk.occupation AS linkedin_occupation,
-        lk.company_found AS linkedin_company_found,
-        lk.url AS linkedin_url,
-        lk.company_name AS linkedin_company_name,
-        lk.title AS linkedin_title,
-        lk.description AS linkedin_description,
-        lk.sub_title AS linkedin_sub_title,
-        lk.search_key AS linkedin_search_key,
-        lk.search_url AS linkedin_search_url,
-        lk.page_index AS linkedin_page_index,
-        ifNull(lk.cnpj, '') AS linkedin_cnpj,
-        multiIf(lk.url IS NOT NULL, 1, 0) AS linkedin_is_leader,
-        lk.id AS linkedin_id1,
-        CAST(NULL AS Nullable(Int64)) AS linkedin_id2,
-        CAST(NULL AS Nullable(Int64)) AS linkedin_id3,
-        lk.score AS linkedin_score1,
-        CAST(NULL AS Nullable(Decimal(38, 19))) AS linkedin_score2,
-        CAST(NULL AS Nullable(Decimal(38, 19))) AS linkedin_score3,
-        lk.person_name AS linkedin_person_name1,
-        CAST(NULL AS Nullable(String)) AS linkedin_person_name2,
-        CAST(NULL AS Nullable(String)) AS linkedin_person_name3,
-        lk.occupation AS linkedin_occupation1,
-        CAST(NULL AS Nullable(String)) AS linkedin_occupation2,
-        CAST(NULL AS Nullable(String)) AS linkedin_occupation3,
-        lk.company_name AS linkedin_company_name1,
-        CAST(NULL AS Nullable(String)) AS linkedin_company_name2,
-        CAST(NULL AS Nullable(String)) AS linkedin_company_name3,
-        lk.url AS linkedin_url1,
-        CAST(NULL AS Nullable(String)) AS linkedin_url2,
-        CAST(NULL AS Nullable(String)) AS linkedin_url3,
-
-        -- Link (pessoas_linkedin como pl)
-        pl.id AS link_id,
-        pl.date_created AS link_date_created,
-        pl.score AS link_score,
-        pl.found_in_title AS link_found_in_title,
-        pl.person_name AS link_person_name,
-        pl.occupation AS link_occupation,
-        pl.company_found AS link_company_found,
-        pl.url AS link_url,
-        pl.company_name AS link_company_name,
-        pl.title AS link_title,
-        pl.description AS link_description,
-        pl.sub_title AS link_sub_title,
-        pl.search_key AS link_search_key,
-        pl.search_url AS link_search_url,
-        pl.cnpj AS link_cnpj,
-
-        -- LC (linkedin_completo_opt como lc)
-        lc.url AS lc_url,
-        lc.company_name AS lc_company_name,
-        lc.cnpj AS lc_cnpj_linkedin_total,
-        lc.person_name AS lc_person_name,
-        lc.occupation AS lc_occupation,
-
         toUInt64(rowNumberInAllBlocks() + 1) AS linha_unica
 
     FROM {estab} e
@@ -506,9 +390,6 @@ def _get_select_sql(periodo, uf_filter=None):
     LEFT JOIN {pivot} sp ON trim(e.cnpj_basico) = trim(sp.cnpj_basico)
     LEFT JOIN {simp} simp ON trim(e.cnpj_basico) = trim(simp.cnpj_basico)
     LEFT JOIN {DATABASE}.empresa_faixas_opt pe ON trim(e.cnpj_basico) = trim(pe.cnpj_basico)
-    LEFT JOIN {DATABASE}.linkedin_completo_opt lk ON concat(trim(e.cnpj_basico), trim(e.cnpj_ordem), trim(e.cnpj_dv)) = trim(lk.cnpj)
-    LEFT JOIN {DATABASE}.pessoas_linkedin pl ON concat(trim(e.cnpj_basico), trim(e.cnpj_ordem), trim(e.cnpj_dv)) = trim(pl.cnpj)
-    LEFT JOIN {DATABASE}.linkedin_completo_opt lc ON concat(trim(e.cnpj_basico), trim(e.cnpj_ordem), trim(e.cnpj_dv)) = trim(lc.cnpj)
     LEFT JOIN {DATABASE}.dict_cnae dc ON trim(e.cnae_fiscal_principal) = trim(dc.codigo_cnae)
     LEFT JOIN {DATABASE}.dict_municipios dm ON trim(e.municipio) = trim(dm.codigo_municipios)
     LEFT JOIN {DATABASE}.dict_naturezas dn ON trim(emp.natureza_juridica) = trim(dn.codigo_natureza_juridica)
@@ -527,23 +408,23 @@ def _get_select_sql(periodo, uf_filter=None):
     """
 
 
-def create_final_table(client, periodo):
+def create_final_table(client, periodo, periodo_antigo=None):
     """Cria a tabela final com INSERT por UF para evitar limite de particoes."""
 
     # Criar pivot de socios primeiro
     _create_socios_pivot(client, periodo)
 
-    # Backup da tabela existente
-    backup_table = f"{FINAL_TABLE}_{periodo}_bkp"
-    print("[Transform] Verificando tabela existente para backup...")
+    # Arquiva a tabela viva existente com o sufixo do ano-mes dela
+    archive_table = _archive_table_name(periodo, periodo_antigo)
+    print("[Transform] Verificando tabela existente para arquivamento...")
     existing = client.query(
         f"SELECT count() FROM system.tables "
-        f"WHERE database = '{DATABASE}' AND name = 'mt_empresa_socios_enriquecido_nov'"
+        f"WHERE database = '{DATABASE}' AND name = '{FINAL_TABLE_NAME}'"
     )
     if existing.result_rows[0][0] > 0:
-        client.command(f"DROP TABLE IF EXISTS {backup_table}")
-        client.command(f"RENAME TABLE {FINAL_TABLE} TO {backup_table}")
-        print(f"[Transform] Backup criado: {backup_table}")
+        client.command(f"DROP TABLE IF EXISTS {archive_table}")
+        client.command(f"RENAME TABLE {FINAL_TABLE} TO {archive_table}")
+        print(f"[Transform] Tabela anterior arquivada como: {archive_table}")
 
     # Criar tabela vazia com DDL explicito
     print("[Transform] Criando tabela final...")
@@ -568,7 +449,7 @@ def create_final_table(client, periodo):
     return True
 
 
-def main(periodo):
+def main(periodo, periodo_antigo=None):
     """Executa criacao da tabela final."""
     client = get_clickhouse_client()
     if client is None:
@@ -576,42 +457,43 @@ def main(periodo):
         return False
 
     try:
-        create_final_table(client, periodo)
+        create_final_table(client, periodo, periodo_antigo)
         print("[Transform] Transformacao concluida com sucesso!")
         return True
 
     except Exception as e:
         print(f"[Transform] ERRO na transformacao: {e}")
-        backup_table = f"{FINAL_TABLE}_{periodo}_bkp"
+        archive_table = _archive_table_name(periodo, periodo_antigo)
+        archive_name = archive_table.split(".", 1)[-1]
         try:
             existing_new = client.query(
                 f"SELECT count() FROM system.tables "
-                f"WHERE database = '{DATABASE}' AND name = 'mt_empresa_socios_enriquecido_nov'"
+                f"WHERE database = '{DATABASE}' AND name = '{FINAL_TABLE_NAME}'"
             )
             existing_bkp = client.query(
                 f"SELECT count() FROM system.tables "
-                f"WHERE database = '{DATABASE}' "
-                f"AND name = 'mt_empresa_socios_enriquecido_nov_{periodo}_bkp'"
+                f"WHERE database = '{DATABASE}' AND name = '{archive_name}'"
             )
             if existing_bkp.result_rows[0][0] > 0:
                 if existing_new.result_rows[0][0] > 0:
                     client.command(f"DROP TABLE {FINAL_TABLE}")
-                client.command(f"RENAME TABLE {backup_table} TO {FINAL_TABLE}")
-                print(f"[Transform] Backup {backup_table} restaurado com sucesso apos erro.")
+                client.command(f"RENAME TABLE {archive_table} TO {FINAL_TABLE}")
+                print(f"[Transform] Tabela {archive_table} restaurada com sucesso apos erro.")
             else:
-                print("[Transform] ATENCAO: Nenhum backup encontrado para restaurar!")
+                print("[Transform] ATENCAO: Nenhuma tabela arquivada encontrada para restaurar!")
         except Exception as restore_err:
-            print(f"[Transform] CRITICO: Falha ao restaurar backup: {restore_err}")
+            print(f"[Transform] CRITICO: Falha ao restaurar tabela arquivada: {restore_err}")
         return False
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Uso: transform_receita.py <periodo>")
-        print("  ex: transform_receita.py 202603")
+        print("Uso: transform_receita.py <periodo> [periodo_antigo]")
+        print("  ex: transform_receita.py 202603 202602")
         sys.exit(1)
 
     periodo = sys.argv[1]
-    success = main(periodo)
+    periodo_antigo = sys.argv[2] if len(sys.argv) > 2 else None
+    success = main(periodo, periodo_antigo)
     if not success:
         sys.exit(1)

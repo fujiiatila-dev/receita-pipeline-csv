@@ -1,4 +1,4 @@
-FROM apache/airflow:2.9.0
+FROM apache/airflow:3.3.0
 
 USER root
 
@@ -37,4 +37,6 @@ RUN pip install --no-cache-dir \
     minio \
     dbt-core \
     dbt-postgres \
-    clickhouse-connect
+    clickhouse-connect \
+    apache-airflow-providers-standard \
+    apache-airflow-providers-fab

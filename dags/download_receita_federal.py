@@ -7,9 +7,9 @@ import zipfile
 import re
 import shutil
 from xml.etree import ElementTree
-from airflow.models.dag import DAG
-from airflow.operators.python import PythonOperator
-from airflow.operators.bash import BashOperator
+from airflow.sdk import DAG
+from airflow.providers.standard.operators.python import PythonOperator
+from airflow.providers.standard.operators.bash import BashOperator
 
 # Add scripts to path to import helpers if needed, though we'll implement logic inline for simplicity/robustness
 sys.path.append("/opt/airflow/scripts")
